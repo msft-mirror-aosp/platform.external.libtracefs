@@ -20,15 +20,20 @@
 #include "tracefs.h"
 #include "tracefs-local.h"
 
+static struct follow_event *root_followers;
+static int nr_root_followers;
+
+static struct follow_event *root_missed_followers;
+static int nr_root_missed_followers;
+
 struct cpu_iterate {
+	struct tracefs_cpu *tcpu;
 	struct tep_record record;
 	struct tep_event *event;
 	struct kbuffer *kbuf;
 	void *page;
 	int psize;
-	int rsize;
 	int cpu;
-	int fd;
 };
 
 static int read_kbuf_record(struct cpu_iterate *cpu)
@@ -46,6 +51,7 @@ static int read_kbuf_record(struct cpu_iterate *cpu)
 	cpu->record.ts = ts;
 	cpu->record.size = kbuffer_event_size(cpu->kbuf);
 	cpu->record.record_size = kbuffer_curr_size(cpu->kbuf);
+	cpu->record.missed_events = kbuffer_missed_events(cpu->kbuf);
 	cpu->record.cpu = cpu->cpu;
 	cpu->record.data = ptr;
 	cpu->record.ref_count = 1;
@@ -59,9 +65,21 @@ int read_next_page(struct tep_handle *tep, struct cpu_iterate *cpu)
 {
 	enum kbuffer_long_size long_size;
 	enum kbuffer_endian endian;
+	int r;
 
-	cpu->rsize = read(cpu->fd, cpu->page, cpu->psize);
-	if (cpu->rsize <= 0)
+	if (!cpu->tcpu)
+		return -1;
+
+	r = tracefs_cpu_buffered_read(cpu->tcpu, cpu->page, true);
+	/*
+	 * tracefs_cpu_buffered_read() only reads in full subbuffer size,
+	 * but this wants partial buffers as well. If the function returns
+	 * empty (-1 for EAGAIN), try tracefs_cpu_read() next, as that can
+	 * read partially filled buffers too, but isn't as efficient.
+	 */
+	if (r <= 0)
+		r = tracefs_cpu_read(cpu->tcpu, cpu->page, true);
+	if (r <= 0)
 		return -1;
 
 	if (!cpu->kbuf) {
@@ -81,8 +99,8 @@ int read_next_page(struct tep_handle *tep, struct cpu_iterate *cpu)
 	}
 
 	kbuffer_load_subbuffer(cpu->kbuf, cpu->page);
-	if (kbuffer_subbuffer_size(cpu->kbuf) > cpu->rsize) {
-		tracefs_warning("%s: page_size > %d", __func__, cpu->rsize);
+	if (kbuffer_subbuffer_size(cpu->kbuf) > r) {
+		tracefs_warning("%s: page_size > %d", __func__, r);
 		return -1;
 	}
 
@@ -105,7 +123,122 @@ int read_next_record(struct tep_handle *tep, struct cpu_iterate *cpu)
 	return -1;
 }
 
-static int read_cpu_pages(struct tep_handle *tep, struct cpu_iterate *cpus, int count,
+/**
+ * tracefs_follow_missed_events - Add callback for missed events for iterators
+ * @instance: The instance to follow
+ * @callback: The function to call when missed events is detected
+ * @callback_data: The data to pass to @callback
+ *
+ * This attaches a callback to an @instance or the root instance if @instance
+ * is NULL, where if tracefs_iterate_raw_events() is called, that if missed
+ * events are detected, it will call @callback, with the following parameters:
+ *  @event: The event pointer of the record with the missing events
+ *  @record; The event instance of @event.
+ *  @cpu: The cpu that the event happened on.
+ *  @callback_data: The same as @callback_data passed to the function.
+ *
+ * If the count of missing events is available, @record->missed_events
+ * will have a positive number holding the number of missed events since
+ * the last event on the same CPU, or just -1 if that number is unknown
+ * but missed events did happen.
+ *
+ * Returns 0 on success and -1 on error.
+ */
+int tracefs_follow_missed_events(struct tracefs_instance *instance,
+				 int (*callback)(struct tep_event *,
+						 struct tep_record *,
+						 int, void *),
+				 void *callback_data)
+{
+	struct follow_event **followers;
+	struct follow_event *follower;
+	struct follow_event follow;
+	int *nr_followers;
+
+	follow.event = NULL;
+	follow.callback = callback;
+	follow.callback_data = callback_data;
+
+	if (instance) {
+		followers = &instance->missed_followers;
+		nr_followers = &instance->nr_missed_followers;
+	} else {
+		followers = &root_missed_followers;
+		nr_followers = &nr_root_missed_followers;
+	}
+	follower = realloc(*followers, sizeof(*follower) *
+			    ((*nr_followers) + 1));
+	if (!follower)
+		return -1;
+
+	*followers = follower;
+	follower[(*nr_followers)++] = follow;
+
+	return 0;
+}
+
+static int call_missed_events(struct tracefs_instance *instance,
+			      struct tep_event *event, struct tep_record *record, int cpu)
+{
+	struct follow_event *followers;
+	int nr_followers;
+	int ret = 0;
+	int i;
+
+	if (instance) {
+		followers = instance->missed_followers;
+		nr_followers = instance->nr_missed_followers;
+	} else {
+		followers = root_missed_followers;
+		nr_followers = nr_root_missed_followers;
+	}
+
+	if (!followers)
+		return 0;
+
+	for (i = 0; i < nr_followers; i++) {
+		ret |= followers[i].callback(event, record,
+					     cpu, followers[i].callback_data);
+	}
+
+	return ret;
+}
+
+static int call_followers(struct tracefs_instance *instance,
+			  struct tep_event *event, struct tep_record *record, int cpu)
+{
+	struct follow_event *followers;
+	int nr_followers;
+	int ret = 0;
+	int i;
+
+	if (record->missed_events)
+		ret = call_missed_events(instance, event, record, cpu);
+	if (ret)
+		return ret;
+
+	if (instance) {
+		followers = instance->followers;
+		nr_followers = instance->nr_followers;
+	} else {
+		followers = root_followers;
+		nr_followers = nr_root_followers;
+	}
+
+	if (!followers)
+		return 0;
+
+	for (i = 0; i < nr_followers; i++) {
+		if (followers[i].event == event)
+			ret |= followers[i].callback(event, record,
+						     cpu, followers[i].callback_data);
+	}
+
+	return ret;
+}
+
+static int read_cpu_pages(struct tep_handle *tep, struct tracefs_instance *instance,
+			  struct cpu_iterate *cpus, int count,
 			  int (*callback)(struct tep_event *,
 					  struct tep_record *,
 					  int, void *),
@@ -131,7 +264,10 @@ static int read_cpu_pages(struct tep_handle *tep, struct cpu_iterate *cpus, int 
 				j = i;
 		}
 		if (j < count) {
-			if (callback(cpus[j].event, &cpus[j].record, cpus[j].cpu, callback_context))
+			if (call_followers(instance, cpus[j].event, &cpus[j].record, cpus[j].cpu))
+				break;
+			if (callback &&
+			    callback(cpus[j].event, &cpus[j].record, cpus[j].cpu, callback_context))
 				break;
 			cpus[j].event = NULL;
 			read_next_record(tep, cpus + j);
@@ -146,64 +282,114 @@ static int read_cpu_pages(struct tep_handle *tep, struct cpu_iterate *cpus, int 
 static int open_cpu_files(struct tracefs_instance *instance, cpu_set_t *cpus,
 			  int cpu_size, struct cpu_iterate **all_cpus, int *count)
 {
+	struct tracefs_cpu *tcpu;
 	struct cpu_iterate *tmp;
-	unsigned int p_size;
-	struct dirent *dent;
-	char file[PATH_MAX];
-	struct stat st;
-	int ret = -1;
-	int fd = -1;
-	char *path;
-	DIR *dir;
+	int nr_cpus;
 	int cpu;
 	int i = 0;
 
-	path = tracefs_instance_get_file(instance, "per_cpu");
-	if (!path)
-		return -1;
-	dir = opendir(path);
-	if (!dir)
-		goto out;
-	p_size = getpagesize();
-	while ((dent = readdir(dir))) {
-		const char *name = dent->d_name;
+	*all_cpus = NULL;
 
-		if (strlen(name) < 4 || strncmp(name, "cpu", 3) != 0)
-			continue;
-		cpu = atoi(name + 3);
+	nr_cpus = sysconf(_SC_NPROCESSORS_CONF);
+	for (cpu = 0; cpu < nr_cpus; cpu++) {
 		if (cpus && !CPU_ISSET_S(cpu, cpu_size, cpus))
 			continue;
-		sprintf(file, "%s/%s", path, name);
-		if (stat(file, &st) < 0 || !S_ISDIR(st.st_mode))
-			continue;
-
-		sprintf(file, "%s/%s/trace_pipe_raw", path, name);
-		fd = open(file, O_RDONLY | O_NONBLOCK);
-		if (fd < 0)
-			continue;
-		tmp = realloc(*all_cpus, (i + 1) * sizeof(struct cpu_iterate));
+		tcpu = tracefs_cpu_open(instance, cpu, true);
+		tmp = realloc(*all_cpus, (i + 1) * sizeof(*tmp));
 		if (!tmp) {
-			close(fd);
-			goto out;
+			i--;
+			goto error;
 		}
-		memset(tmp + i, 0, sizeof(struct cpu_iterate));
-		tmp[i].fd = fd;
-		tmp[i].cpu = cpu;
-		tmp[i].page =  malloc(p_size);
-		tmp[i].psize = p_size;
+
 		*all_cpus = tmp;
-		*count = i + 1;
+
+		memset(tmp + i, 0, sizeof(*tmp));
+
+		if (!tcpu)
+			goto error;
+
+		tmp[i].tcpu = tcpu;
+		tmp[i].cpu = cpu;
+		tmp[i].psize = tracefs_cpu_read_size(tcpu);
+		tmp[i].page =  malloc(tmp[i].psize);
+
 		if (!tmp[i++].page)
-			goto out;
+			goto error;
+	}
+	*count = i;
+	return 0;
+ error:
+	tmp = *all_cpus;
+	for (; i >= 0; i--) {
+		tracefs_cpu_close(tmp[i].tcpu);
+		free(tmp[i].page);
+	}
+	free(tmp);
+	*all_cpus = NULL;
+	return -1;
+}
+
+/**
+ * tracefs_follow_event - Add callback for specific events for iterators
+ * @tep: a handle to the trace event parser context
+ * @instance: The instance to follow
+ * @system: The system of the event to track
+ * @event_name: The name of the event to track
+ * @callback: The function to call when the event is hit in an iterator
+ * @callback_data: The data to pass to @callback
+ *
+ * This attaches a callback to an @instance or the root instance if @instance
+ * is NULL, where if tracefs_iterate_raw_events() is called, that if the specified
+ * event is hit, it will call @callback, with the following parameters:
+ *  @event: The event pointer that was found by @system and @event_name.
+ *  @record; The event instance of @event.
+ *  @cpu: The cpu that the event happened on.
+ *  @callback_data: The same as @callback_data passed to the function.
+ *
+ * Returns 0 on success and -1 on error.
+ */
+int tracefs_follow_event(struct tep_handle *tep, struct tracefs_instance *instance,
+			  const char *system, const char *event_name,
+			  int (*callback)(struct tep_event *,
+					  struct tep_record *,
+					  int, void *),
+			  void *callback_data)
+{
+	struct follow_event **followers;
+	struct follow_event *follower;
+	struct follow_event follow;
+	int *nr_followers;
+
+	if (!tep) {
+		errno = EINVAL;
+		return -1;
 	}
 
-	ret = 0;
+	follow.event = tep_find_event_by_name(tep, system, event_name);
+	if (!follow.event) {
+		errno = ENOENT;
+		return -1;
+	}
 
-out:
-	if (dir)
-		closedir(dir);
-	tracefs_put_tracing_file(path);
-	return ret;
+	follow.callback = callback;
+	follow.callback_data = callback_data;
+
+	if (instance) {
+		followers = &instance->followers;
+		nr_followers = &instance->nr_followers;
+	} else {
+		followers = &root_followers;
+		nr_followers = &nr_root_followers;
+	}
+	follower = realloc(*followers, sizeof(*follower) *
+			    ((*nr_followers) + 1));
+	if (!follower)
+		return -1;
+
+	*followers = follower;
+	follower[(*nr_followers)++] = follow;
+
+	return 0;
 }
 
 static bool top_iterate_keep_going;
@@ -233,22 +419,30 @@ int tracefs_iterate_raw_events(struct tep_handle *tep,
 						int, void *),
 				void *callback_context)
 {
-	bool *keep_going = instance ? &instance->pipe_keep_going :
+	bool *keep_going = instance ? &instance->iterate_keep_going :
 				      &top_iterate_keep_going;
-	struct cpu_iterate *all_cpus = NULL;
+	struct follow_event *followers;
+	struct cpu_iterate *all_cpus;
 	int count = 0;
 	int ret;
 	int i;
 
 	(*(volatile bool *)keep_going) = true;
 
-	if (!tep || !callback)
+	if (!tep)
+		return -1;
+
+	if (instance)
+		followers = instance->followers;
+	else
+		followers = root_followers;
+	if (!callback && !followers)
 		return -1;
 
 	ret = open_cpu_files(instance, cpus, cpu_size, &all_cpus, &count);
 	if (ret < 0)
 		goto out;
-	ret = read_cpu_pages(tep, all_cpus, count,
+	ret = read_cpu_pages(tep, instance, all_cpus, count,
 			     callback, callback_context,
 			     keep_going);
 
@@ -256,7 +450,7 @@ out:
 	if (all_cpus) {
 		for (i = 0; i < count; i++) {
 			kbuffer_free(all_cpus[i].kbuf);
-			close(all_cpus[i].fd);
+			tracefs_cpu_close(all_cpus[i].tcpu);
 			free(all_cpus[i].page);
 		}
 		free(all_cpus);
@@ -945,6 +1139,40 @@ out:
 	return ret;
 }
 
+static void set_tep_cpus(const char *tracing_dir, struct tep_handle *tep)
+{
+	struct stat st;
+	char path[PATH_MAX];
+	int cpus = sysconf(_SC_NPROCESSORS_CONF);
+	int max_cpu = 0;
+	int ret;
+	int i;
+
+	if (!tracing_dir)
+		tracing_dir = tracefs_tracing_dir();
+
+	/*
+	 * Paranoid: in case sysconf() above does not work.
+	 * And we also only care about the number of tracing
+	 * buffers that exist. If cpus is 32, but the top half
+	 * is offline, there may only be 16 tracing buffers.
+	 * That's what we want to know.
+	 */
+	for (i = 0; !cpus || i < cpus; i++) {
+		snprintf(path, PATH_MAX, "%s/per_cpu/cpu%d", tracing_dir, i);
+		ret = stat(path, &st);
+		if (!ret && S_ISDIR(st.st_mode))
+			max_cpu = i + 1;
+		else if (i >= cpus)
+			break;
+	}
+
+	if (!max_cpu)
+		max_cpu = cpus;
+
+	tep_set_cpus(tep, max_cpu);
+}
+
 /**
  * tracefs_local_events_system - create a tep from the events of the specified subsystem.
  *
@@ -968,6 +1196,11 @@ struct tep_handle *tracefs_local_events_system(const char *tracing_dir,
 		tep_free(tep);
 		tep = NULL;
 	}
+
+	set_tep_cpus(tracing_dir, tep);
+
+	/* Set the long size for this tep handle */
+	tep_set_long_size(tep, tep_get_header_page_size(tep));
 
 	return tep;
 }
@@ -1004,9 +1237,68 @@ static bool match(const char *str, regex_t *re)
 	return regexec(re, str, 0, NULL, 0) == 0;
 }
 
+enum event_state {
+	STATE_INIT,
+	STATE_ENABLED,
+	STATE_DISABLED,
+	STATE_MIXED,
+	STATE_ERROR,
+};
+
+static int read_event_state(struct tracefs_instance *instance, const char *file,
+			    enum event_state *state)
+{
+	char *val;
+	int ret = 0;
+
+	if (*state == STATE_ERROR)
+		return -1;
+
+	val = tracefs_instance_file_read(instance, file, NULL);
+	if (!val)
+		return -1;
+
+	switch (val[0]) {
+	case '0':
+		switch (*state) {
+		case STATE_INIT:
+			*state = STATE_DISABLED;
+			break;
+		case STATE_ENABLED:
+			*state = STATE_MIXED;
+			break;
+		default:
+			break;
+		}
+		break;
+	case '1':
+		switch (*state) {
+		case STATE_INIT:
+			*state = STATE_ENABLED;
+			break;
+		case STATE_DISABLED:
+			*state = STATE_MIXED;
+			break;
+		default:
+			break;
+		}
+		break;
+	case 'X':
+		*state = STATE_MIXED;
+		break;
+	default:
+		*state = TRACEFS_ERROR;
+		ret = -1;
+		break;
+	}
+	free(val);
+
+	return ret;
+}
+
 static int enable_disable_event(struct tracefs_instance *instance,
 				const char *system, const char *event,
-				bool enable)
+				bool enable, enum event_state *state)
 {
 	const char *str = enable ? "1" : "0";
 	char *system_event;
@@ -1016,14 +1308,18 @@ static int enable_disable_event(struct tracefs_instance *instance,
 	if (ret < 0)
 		return ret;
 
-	ret = tracefs_instance_file_write(instance, system_event, str);
+	if (state)
+		ret = read_event_state(instance, system_event, state);
+	else
+		ret = tracefs_instance_file_write(instance, system_event, str);
 	free(system_event);
 
 	return ret;
 }
 
 static int enable_disable_system(struct tracefs_instance *instance,
-				 const char *system, bool enable)
+				 const char *system, bool enable,
+				 enum event_state *state)
 {
 	const char *str = enable ? "1" : "0";
 	char *system_path;
@@ -1033,7 +1329,10 @@ static int enable_disable_system(struct tracefs_instance *instance,
 	if (ret < 0)
 		return ret;
 
-	ret = tracefs_instance_file_write(instance, system_path, str);
+	if (state)
+		ret = read_event_state(instance, system_path, state);
+	else
+		ret = tracefs_instance_file_write(instance, system_path, str);
 	free(system_path);
 
 	return ret;
@@ -1071,7 +1370,7 @@ static int make_regex(regex_t *re, const char *match)
 
 static int event_enable_disable(struct tracefs_instance *instance,
 				const char *system, const char *event,
-				bool enable)
+				bool enable, enum event_state *state)
 {
 	regex_t system_re, event_re;
 	char **systems;
@@ -1108,7 +1407,7 @@ static int event_enable_disable(struct tracefs_instance *instance,
 
 		/* Check for the short cut first */
 		if (!event) {
-			ret = enable_disable_system(instance, systems[s], enable);
+			ret = enable_disable_system(instance, systems[s], enable, state);
 			if (ret < 0)
 				break;
 			ret = 0;
@@ -1123,7 +1422,7 @@ static int event_enable_disable(struct tracefs_instance *instance,
 			if (!match(events[e], &event_re))
 				continue;
 			ret = enable_disable_event(instance, systems[s],
-						   events[e], enable);
+						   events[e], enable, state);
 			if (ret < 0)
 				break;
 			ret = 0;
@@ -1162,11 +1461,55 @@ static int event_enable_disable(struct tracefs_instance *instance,
 int tracefs_event_enable(struct tracefs_instance *instance,
 			 const char *system, const char *event)
 {
-	return event_enable_disable(instance, system, event, true);
+	return event_enable_disable(instance, system, event, true, NULL);
 }
 
 int tracefs_event_disable(struct tracefs_instance *instance,
 			  const char *system, const char *event)
 {
-	return event_enable_disable(instance, system, event, false);
+	return event_enable_disable(instance, system, event, false, NULL);
+}
+
+/**
+ * tracefs_event_is_enabled - return if the event is enabled or not
+ * @instance: ftrace instance, can be NULL for the top instance
+ * @system: The name of the system to check
+ * @event: The name of the event to check
+ *
+ * Checks is an event or multiple events are enabled.
+ *
+ * If @system is NULL, then it will check all the systems where @event is
+ * a match.
+ *
+ * If @event is NULL, then it will check all events where @system is a match.
+ *
+ * If both @system and @event are NULL, then it will check all events
+ *
+ * Returns TRACEFS_ALL_ENABLED if all matching are enabled.
+ * Returns TRACEFS_SOME_ENABLED if some are enabled and some are not
+ * Returns TRACEFS_ALL_DISABLED if none of the events are enabled.
+ * Returns TRACEFS_ERROR if there is an error reading the events.
+ */
+enum tracefs_enable_state
+tracefs_event_is_enabled(struct tracefs_instance *instance,
+			 const char *system, const char *event)
+{
+	enum event_state state = STATE_INIT;
+	int ret;
+
+	ret = event_enable_disable(instance, system, event, false, &state);
+
+	if (ret < 0)
+		return TRACEFS_ERROR;
+
+	switch (state) {
+	case STATE_ENABLED:
+		return TRACEFS_ALL_ENABLED;
+	case STATE_DISABLED:
+		return TRACEFS_ALL_DISABLED;
+	case STATE_MIXED:
+		return TRACEFS_SOME_ENABLED;
+	default:
+		return TRACEFS_ERROR;
+	}
 }

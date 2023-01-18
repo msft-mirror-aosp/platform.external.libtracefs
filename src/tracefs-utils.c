@@ -29,6 +29,7 @@
 #define STR(x) _STR(x)
 
 static int log_level = TEP_LOG_CRITICAL;
+static char *custom_tracing_dir;
 
 /**
  * tracefs_set_loglevel - set log level of the library
@@ -84,13 +85,8 @@ static int mount_debugfs(void)
 	return ret;
 }
 
-/**
- * trace_find_tracing_dir - Find tracing directory
- *
- * Returns string containing the full path to the system's tracing directory.
- * The string must be freed by free()
- */
-__hidden char *trace_find_tracing_dir(void)
+/* Exported for testing purpose only */
+__hidden char *find_tracing_dir(bool debugfs, bool mount)
 {
 	char *debug_str = NULL;
 	char fspath[PATH_MAX+1];
@@ -109,9 +105,11 @@ __hidden char *trace_find_tracing_dir(void)
 		      STR(PATH_MAX)
 		      "s %99s %*s %*d %*d\n",
 		      fspath, type) == 2) {
-		if (strcmp(type, "tracefs") == 0)
+		if (!debugfs && strcmp(type, "tracefs") == 0)
 			break;
 		if (!debug_str && strcmp(type, "debugfs") == 0) {
+			if (debugfs)
+				break;
 			debug_str = strdup(fspath);
 			if (!debug_str) {
 				fclose(fp);
@@ -121,14 +119,21 @@ __hidden char *trace_find_tracing_dir(void)
 	}
 	fclose(fp);
 
-	if (strcmp(type, "tracefs") != 0) {
-		if (mount_tracefs() < 0) {
+	if (debugfs) {
+		if (strcmp(type, "debugfs") != 0) {
+			if (!mount || mount_debugfs() < 0)
+				return NULL;
+			strcpy(fspath, DEBUGFS_PATH);
+		}
+	} else if (strcmp(type, "tracefs") != 0) {
+		if (!mount || mount_tracefs() < 0) {
 			if (debug_str) {
 				strncpy(fspath, debug_str, PATH_MAX);
 				fspath[PATH_MAX] = 0;
 			} else {
-				if (mount_debugfs() < 0) {
-					tracefs_warning("debugfs not mounted, please mount");
+				if (!mount || mount_debugfs() < 0) {
+					if (mount)
+						tracefs_warning("debugfs not mounted, please mount");
 					free(debug_str);
 					return NULL;
 				}
@@ -156,6 +161,86 @@ __hidden char *trace_find_tracing_dir(void)
 }
 
 /**
+ * tracefs_tracing_dir_is_mounted - test if the tracing dir is already mounted
+ * @mount: Mount it if it is not already mounted
+ * @path: the path to the tracing directory if mounted or was mounted
+ *
+ * Returns 1 if the tracing directory is already mounted and 0 if it is not.
+ * If @mount is set and it fails to mount, it returns -1.
+ *
+ * If path is not NULL, and the tracing directory is or was mounted, it holds
+ * the path to the tracing directory. It must not be freed.
+ */
+int tracefs_tracing_dir_is_mounted(bool mount, const char **path)
+{
+	const char *dir;
+
+	dir = find_tracing_dir(false, false);
+	if (dir) {
+		if (path)
+			*path = dir;
+		return 1;
+	}
+	if (!mount)
+		return 0;
+
+	dir = find_tracing_dir(false, mount);
+	if (!dir)
+		return -1;
+	if (path)
+		*path = dir;
+	return 0;
+}
+
+/**
+ * trace_find_tracing_dir - Find tracing directory
+ * @debugfs: Boolean to just return the debugfs directory
+ *
+ * Returns string containing the full path to the system's tracing directory.
+ * The string must be freed by free()
+ */
+__hidden char *trace_find_tracing_dir(bool debugfs)
+{
+	return find_tracing_dir(debugfs, false);
+}
+
+/**
+ * tracefs_set_tracing_dir - Set location of the tracing directory
+ * @tracing_dir: full path to the system's tracing directory mount point.
+ *
+ * Set the location to the system's tracing directory. This API should be used
+ * to set a custom location of the tracing directory. There is no need to call
+ * it if the location is standard, in that case the library will auto detect it.
+ *
+ * Returns 0 on success, -1 otherwise.
+ */
+int tracefs_set_tracing_dir(char *tracing_dir)
+{
+	if (custom_tracing_dir) {
+		free(custom_tracing_dir);
+		custom_tracing_dir = NULL;
+	}
+
+	if (tracing_dir) {
+		custom_tracing_dir = strdup(tracing_dir);
+		if (!custom_tracing_dir)
+			return -1;
+	}
+
+	return 0;
+}
+
+/* Used to check if the directory is still mounted */
+static int test_dir(const char *dir, const char *file)
+{
+	char path[strlen(dir) + strlen(file) + 2];
+	struct stat st;
+
+	sprintf(path, "%s/%s", dir, file);
+	return stat(path, &st) < 0 ? 0 : 1;
+}
+
+/**
  * tracefs_tracing_dir - Get tracing directory
  *
  * Returns string containing the full path to the system's tracing directory.
@@ -165,11 +250,33 @@ const char *tracefs_tracing_dir(void)
 {
 	static const char *tracing_dir;
 
-	if (tracing_dir)
+	/* Do not check custom_tracing_dir */
+	if (custom_tracing_dir)
+		return custom_tracing_dir;
+
+	if (tracing_dir && test_dir(tracing_dir, "trace"))
 		return tracing_dir;
 
-	tracing_dir = trace_find_tracing_dir();
+	tracing_dir = find_tracing_dir(false, true);
 	return tracing_dir;
+}
+
+/**
+ * tracefs_debug_dir - Get debugfs directory path
+ *
+ * Returns string containing the full path to the system's debugfs directory.
+ *
+ * The returned string must *not* be freed.
+ */
+const char *tracefs_debug_dir(void)
+{
+	static const char *debug_dir;
+
+	if (debug_dir && test_dir(debug_dir, "tracing"))
+		return debug_dir;
+
+	debug_dir = find_tracing_dir(true, true);
+	return debug_dir;
 }
 
 /**
@@ -486,4 +593,32 @@ int tracefs_list_size(char **list)
 
 	list--;
 	return (int)*(unsigned long *)list;
+}
+
+/**
+ * tracefs_tracer_available - test if a tracer is available
+ * @tracing_dir: The directory that contains the tracing directory
+ * @tracer: The name of the tracer
+ *
+ * Return true if the tracer is available
+ */
+bool tracefs_tracer_available(const char *tracing_dir, const char *tracer)
+{
+	bool ret = false;
+	char **tracers = NULL;
+	int i;
+
+	tracers = tracefs_tracers(tracing_dir);
+	if (!tracers)
+		return false;
+
+	for (i = 0; tracers[i]; i++) {
+		if (strcmp(tracer, tracers[i]) == 0) {
+			ret = true;
+			break;
+		}
+	}
+
+	tracefs_list_free(tracers);
+	return ret;
 }
