@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: LGPL-2.1
 # libtracefs version
 TFS_VERSION = 1
-TFS_PATCHLEVEL = 4
-TFS_EXTRAVERSION = dev
+TFS_PATCHLEVEL = 6
+TFS_EXTRAVERSION = 4
 TRACEFS_VERSION = $(TFS_VERSION).$(TFS_PATCHLEVEL).$(TFS_EXTRAVERSION)
 
 export TFS_VERSION
@@ -52,12 +52,12 @@ endif
 
 libdir_relative ?= $(libdir_relative_temp)
 prefix ?= /usr/local
-man_dir = $(prefix)/share/man
+man_dir ?= $(prefix)/share/man
 man_dir_SQ = '$(subst ','\'',$(man_dir))'
-libdir = $(prefix)/$(libdir_relative)
+libdir ?= $(prefix)/$(libdir_relative)
 libdir_SQ = '$(subst ','\'',$(libdir))'
 includedir_relative ?= include/tracefs
-includedir = $(prefix)/$(includedir_relative)
+includedir ?= $(prefix)/$(includedir_relative)
 includedir_SQ = '$(subst ','\'',$(includedir))'
 pkgconfig_dir ?= $(word 1,$(shell $(PKG_CONFIG) 		\
 			--variable pc_path pkg-config | tr ":" " "))
@@ -132,7 +132,8 @@ LIBTRACEFS_SHARED_VERSION = $(bdir)/libtracefs.so.$(TFS_VERSION)
 PKG_CONFIG_SOURCE_FILE = libtracefs.pc
 PKG_CONFIG_FILE := $(addprefix $(obj)/,$(PKG_CONFIG_SOURCE_FILE))
 
-LIBS = $(LIBTRACEEVENT_LIBS) -lpthread
+LPTHREAD ?= -lpthread
+LIBS = $(LIBTRACEEVENT_LIBS) $(LPTHREAD)
 
 export LIBS
 export LIBTRACEFS_STATIC LIBTRACEFS_SHARED
@@ -162,6 +163,9 @@ export INCLUDES
 
 # Append required CFLAGS
 override CFLAGS += -D_GNU_SOURCE $(LIBTRACEEVENT_INCLUDES) $(INCLUDES)
+
+# Make sure 32 bit stat() works on large file systems
+override CFLAGS += -D_FILE_OFFSET_BITS=64
 
 all: all_cmd
 
@@ -330,7 +334,6 @@ OBJS += tracefs-instance.o
 OBJS += tracefs-events.o
 
 OBJS := $(OBJS:%.o=$(bdir)/%.o)
-DEPS := $(OBJS:$(bdir)/%.o=$(bdir)/.%.d)
 
 all: $(DEFAULT_TARGET)
 
@@ -388,3 +391,7 @@ clean:
 	  $(BUILD_PREFIX))
 
 .PHONY: clean
+
+# libtracefs.a and libtracefs.so would concurrently enter the same directory -
+# a recipe for collisions.
+.NOTPARALLEL:

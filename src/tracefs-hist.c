@@ -280,25 +280,11 @@ tracefs_hist_alloc_2d(struct tep_handle *tep,
 	return tracefs_hist_alloc_nd(tep, system, event_name, axis);
 }
 
-/**
- * tracefs_hist_alloc_nd - Initialize N-dimensional histogram
- * @tep: The tep handle that has the @system and @event.
- * @system: The system the histogram event is in
- * @event: The event that the histogram will be attached to
- * @axes: An array of histogram axes, terminated by a {NULL, 0} entry
- *
- * Will initialize a histogram descriptor that will be attached to
- * the @system/@event. This only initializes the descriptor with the given
- * @axes keys as primaries. This only initializes the descriptor, it does
- * not start the histogram in the kernel.
- *
- * Returns an initialized histogram on success.
- * NULL on failure.
- */
-struct tracefs_hist *
-tracefs_hist_alloc_nd(struct tep_handle *tep,
-		      const char *system, const char *event_name,
-		      struct tracefs_hist_axis *axes)
+static struct tracefs_hist *
+hist_alloc_nd(struct tep_handle *tep,
+	      const char *system, const char *event_name,
+	      struct tracefs_hist_axis *axes,
+	      struct tracefs_hist_axis_cnt *axes_cnt)
 {
 	struct tep_event *event;
 	struct tracefs_hist *hist;
@@ -326,11 +312,60 @@ tracefs_hist_alloc_nd(struct tep_handle *tep,
 		if (tracefs_hist_add_key(hist, axes->key, axes->type) < 0)
 			goto fail;
 
+	for (; axes_cnt && axes_cnt->key; axes_cnt++)
+		if (tracefs_hist_add_key_cnt(hist, axes_cnt->key, axes_cnt->type, axes_cnt->cnt) < 0)
+			goto fail;
+
 	return hist;
 
  fail:
 	tracefs_hist_free(hist);
 	return NULL;
+}
+/**
+ * tracefs_hist_alloc_nd - Initialize N-dimensional histogram
+ * @tep: The tep handle that has the @system and @event.
+ * @system: The system the histogram event is in
+ * @event: The event that the histogram will be attached to
+ * @axes: An array of histogram axes, terminated by a {NULL, 0} entry
+ *
+ * Will initialize a histogram descriptor that will be attached to
+ * the @system/@event. This only initializes the descriptor with the given
+ * @axes keys as primaries. This only initializes the descriptor, it does
+ * not start the histogram in the kernel.
+ *
+ * Returns an initialized histogram on success.
+ * NULL on failure.
+ */
+struct tracefs_hist *
+tracefs_hist_alloc_nd(struct tep_handle *tep,
+		      const char *system, const char *event_name,
+		      struct tracefs_hist_axis *axes)
+{
+	return hist_alloc_nd(tep, system, event_name, axes, NULL);
+}
+
+/**
+ * tracefs_hist_alloc_nd_cnt - Initialize N-dimensional histogram
+ * @tep: The tep handle that has the @system and @event.
+ * @system: The system the histogram event is in
+ * @event: The event that the histogram will be attached to
+ * @axes: An array of histogram axes, terminated by a {NULL, 0} entry
+ *
+ * Will initialize a histogram descriptor that will be attached to
+ * the @system/@event. This only initializes the descriptor with the given
+ * @axes keys as primaries. This only initializes the descriptor, it does
+ * not start the histogram in the kernel.
+ *
+ * Returns an initialized histogram on success.
+ * NULL on failure.
+ */
+struct tracefs_hist *
+tracefs_hist_alloc_nd_cnt(struct tep_handle *tep,
+			  const char *system, const char *event_name,
+			  struct tracefs_hist_axis_cnt *axes)
+{
+	return hist_alloc_nd(tep, system, event_name, NULL, axes);
 }
 
 /**
@@ -338,13 +373,14 @@ tracefs_hist_alloc_nd(struct tep_handle *tep,
  * @hist: The histogram to add the key to.
  * @key: The name of the key field.
  * @type: The type of the key format.
+ * @cnt: Some types require a counter, for those, this is used
  *
  * This adds a secondary or tertiary key to the histogram.
  *
  * Returns 0 on success, -1 on error.
  */
-int tracefs_hist_add_key(struct tracefs_hist *hist, const char *key,
-			 enum tracefs_hist_key_type type)
+int tracefs_hist_add_key_cnt(struct tracefs_hist *hist, const char *key,
+			     enum tracefs_hist_key_type type, int cnt)
 {
 	bool use_key = false;
 	char *key_type = NULL;
@@ -377,6 +413,9 @@ int tracefs_hist_add_key(struct tracefs_hist *hist, const char *key,
 	case TRACEFS_HIST_KEY_USECS:
 		ret = asprintf(&key_type, "%s.usecs", key);
 		break;
+	case TRACEFS_HIST_KEY_BUCKETS:
+		ret = asprintf(&key_type, "%s.buckets=%d", key, cnt);
+		break;
 	case TRACEFS_HIST_KEY_MAX:
 		/* error */
 		break;
@@ -393,6 +432,22 @@ int tracefs_hist_add_key(struct tracefs_hist *hist, const char *key,
 	hist->keys = new_list;
 
 	return 0;
+}
+
+/**
+ * tracefs_hist_add_key - add to a key to a histogram
+ * @hist: The histogram to add the key to.
+ * @key: The name of the key field.
+ * @type: The type of the key format.
+ *
+ * This adds a secondary or tertiary key to the histogram.
+ *
+ * Returns 0 on success, -1 on error.
+ */
+int tracefs_hist_add_key(struct tracefs_hist *hist, const char *key,
+			 enum tracefs_hist_key_type type)
+{
+	return tracefs_hist_add_key_cnt(hist, key, type, 0);
 }
 
 /**
@@ -654,6 +709,12 @@ struct action {
 	char				*save;
 };
 
+struct name_hash {
+	struct name_hash	*next;
+	char			*name;
+	char			*hash;
+};
+
 /*
  * @name: name of the synthetic event
  * @start_system: system of the starting event
@@ -684,6 +745,7 @@ struct tracefs_synth {
 	struct action		*actions;
 	struct action		**next_action;
 	struct tracefs_dynevent	*dyn_event;
+	struct name_hash	*name_hash[1 << HASH_BITS];
 	char			*start_hist;
 	char			*end_hist;
 	char			*name;
@@ -724,6 +786,21 @@ static void action_free(struct action *action)
 	free(action);
 }
 
+static void free_name_hash(struct name_hash **hash)
+{
+	struct name_hash *item;
+	int i;
+
+	for (i = 0; i < 1 << HASH_BITS; i++) {
+		while ((item = hash[i])) {
+			hash[i] = item->next;
+			free(item->name);
+			free(item->hash);
+			free(item);
+		}
+	}
+}
+
 /**
  * tracefs_synth_free - free the resources alloced to a synth
  * @synth: The tracefs_synth descriptor
@@ -750,6 +827,7 @@ void tracefs_synth_free(struct tracefs_synth *synth)
 	tracefs_list_free(synth->end_keys);
 	tracefs_list_free(synth->start_vars);
 	tracefs_list_free(synth->end_vars);
+	free_name_hash(synth->name_hash);
 	free(synth->start_filter);
 	free(synth->end_filter);
 	free(synth->start_type);
@@ -773,6 +851,7 @@ static bool verify_event_fields(struct tep_event *start_event,
 {
 	const struct tep_format_field *start_field;
 	const struct tep_format_field *end_field;
+	int start_flags, end_flags;
 
 	if (!trace_verify_event_field(start_event, start_field_name,
 				      &start_field))
@@ -783,7 +862,11 @@ static bool verify_event_fields(struct tep_event *start_event,
 					      &end_field))
 			return false;
 
-		if (start_field->flags != end_field->flags ||
+		/* A pointer can still match a long */
+		start_flags = start_field->flags & ~TEP_FIELD_IS_POINTER;
+		end_flags = end_field->flags & ~TEP_FIELD_IS_POINTER;
+
+		if (start_flags != end_flags ||
 		    start_field->size != end_field->size) {
 			errno = EBADE;
 			return false;
@@ -1068,9 +1151,8 @@ struct tracefs_synth *tracefs_synth_alloc(struct tep_handle *tep,
 	if (!synth->name || !synth->start_keys || !synth->end_keys || ret) {
 		tracefs_synth_free(synth);
 		synth = NULL;
-	}
-
-	synth->new_format = has_new_format();
+	} else
+		synth->new_format = has_new_format();
 
 	return synth;
 }
@@ -1096,7 +1178,7 @@ static int add_synth_fields(struct tracefs_synth *synth,
 		return -1;
 	synth->synthetic_fields = list;
 
-	ret = asprintf(&str, "$%s", name);
+	ret = asprintf(&str, "$%s", var ? : name);
 	if (ret < 0) {
 		trace_list_pop(synth->synthetic_fields);
 		return -1;
@@ -1196,7 +1278,7 @@ static unsigned int make_rand(void)
 	return((unsigned)(seed/65536) % 32768);
 }
 
-static char *new_arg(struct tracefs_synth *synth)
+static char *new_name(struct tracefs_synth *synth, const char *name)
 {
 	int cnt = synth->arg_cnt + 1;
 	char *arg;
@@ -1205,14 +1287,63 @@ static char *new_arg(struct tracefs_synth *synth)
 	/* Create a unique argument name */
 	if (!synth->arg_name[0]) {
 		/* make_rand() returns at most 32768 (total 13 bytes in use) */
-		sprintf(synth->arg_name, "__arg_%u_", make_rand());
+		sprintf(synth->arg_name, "%u", make_rand());
 	}
-	ret = asprintf(&arg, "%s%d", synth->arg_name, cnt);
+	ret = asprintf(&arg, "__%s_%s_%d", name, synth->arg_name, cnt);
 	if (ret < 0)
 		return NULL;
 
 	synth->arg_cnt = cnt;
 	return arg;
+}
+
+static struct name_hash *find_name(struct tracefs_synth *synth, const char *name)
+{
+	unsigned int key = quick_hash(name);
+	struct name_hash *hash = synth->name_hash[key];
+
+	for (; hash; hash = hash->next) {
+		if (!strcmp(hash->name, name))
+			return hash;
+	}
+	return NULL;
+}
+
+static const char *hash_name(struct tracefs_synth *synth, const char *name)
+{
+	struct name_hash *hash;
+	int key;
+
+	hash = find_name(synth, name);
+	if (hash)
+		return hash->hash;
+
+	hash = malloc(sizeof(*hash));
+	if (!hash)
+		return name;
+
+	hash->hash = new_name(synth, name);
+	if (!hash->hash) {
+		free(hash);
+		return name;
+	}
+
+	key = quick_hash(name);
+	hash->next = synth->name_hash[key];
+	synth->name_hash[key] = hash;
+
+	hash->name = strdup(name);
+	if (!hash->name) {
+		free(hash->hash);
+		free(hash);
+		return name;
+	}
+	return hash->hash;
+}
+
+static char *new_arg(struct tracefs_synth *synth)
+{
+	return new_name(synth, "arg");
 }
 
 /**
@@ -1245,6 +1376,7 @@ int tracefs_synth_add_compare_field(struct tracefs_synth *synth,
 				    const char *name)
 {
 	const struct tep_format_field *start_field;
+	const char *hname;
 	char *start_arg;
 	char *compare;
 	int ret;
@@ -1296,11 +1428,12 @@ int tracefs_synth_add_compare_field(struct tracefs_synth *synth,
 	if (ret < 0)
 		return -1;
 
-	ret = add_var(&synth->end_vars, name, compare, false);
+	hname = hash_name(synth, name);
+	ret = add_var(&synth->end_vars, hname, compare, false);
 	if (ret < 0)
 		goto out_free;
 
-	ret = add_synth_fields(synth, start_field, name, NULL);
+	ret = add_synth_fields(synth, start_field, name, hname);
 	if (ret < 0)
 		goto out_free;
 
@@ -1313,9 +1446,10 @@ int tracefs_synth_add_compare_field(struct tracefs_synth *synth,
 __hidden int synth_add_start_field(struct tracefs_synth *synth,
 				   const char *start_field,
 				   const char *name,
-				   enum tracefs_hist_key_type type)
+				   enum tracefs_hist_key_type type, int count)
 {
 	const struct tep_format_field *field;
+	const char *var;
 	char *start_arg;
 	char **tmp;
 	int *types;
@@ -1330,6 +1464,8 @@ __hidden int synth_add_start_field(struct tracefs_synth *synth,
 	if (!name)
 		name = start_field;
 
+	var = hash_name(synth, name);
+
 	if (!trace_verify_event_field(synth->start_event, start_field, &field))
 		return -1;
 
@@ -1341,11 +1477,11 @@ __hidden int synth_add_start_field(struct tracefs_synth *synth,
 	if (ret)
 		goto out_free;
 
-	ret = add_var(&synth->end_vars, name, start_arg, true);
+	ret = add_var(&synth->end_vars, var, start_arg, true);
 	if (ret)
 		goto out_free;
 
-	ret = add_synth_fields(synth, field, name, NULL);
+	ret = add_synth_fields(synth, field, name, var);
 	if (ret)
 		goto out_free;
 
@@ -1394,7 +1530,7 @@ int tracefs_synth_add_start_field(struct tracefs_synth *synth,
 				  const char *start_field,
 				  const char *name)
 {
-	return synth_add_start_field(synth, start_field, name, 0);
+	return synth_add_start_field(synth, start_field, name, 0, 0);
 }
 
 /**
@@ -1417,6 +1553,7 @@ int tracefs_synth_add_end_field(struct tracefs_synth *synth,
 				const char *name)
 {
 	const struct tep_format_field *field;
+	const char *hname = NULL;
 	char *tmp_var = NULL;
 	int ret;
 
@@ -1425,17 +1562,24 @@ int tracefs_synth_add_end_field(struct tracefs_synth *synth,
 		return -1;
 	}
 
+	if (name) {
+		if (strncmp(name, "__arg", 5) != 0)
+			hname = hash_name(synth, name);
+		else
+			hname = name;
+	}
+
 	if (!name)
 		tmp_var = new_arg(synth);
 
 	if (!trace_verify_event_field(synth->end_event, end_field, &field))
 		return -1;
 
-	ret = add_var(&synth->end_vars, name ? : tmp_var, end_field, false);
+	ret = add_var(&synth->end_vars, name ? hname : tmp_var, end_field, false);
 	if (ret)
 		goto out;
 
-	ret = add_synth_fields(synth, field, name, tmp_var);
+	ret = add_synth_fields(synth, field, name, hname ? : tmp_var);
 	free(tmp_var);
  out:
 	return ret;
@@ -2194,7 +2338,7 @@ int tracefs_synth_echo_cmd(struct trace_seq *seq,
 		new_event = true;
 	}
 
-	path = trace_find_tracing_dir();
+	path = trace_find_tracing_dir(false);
 	if (!path)
 		goto out_free;
 
@@ -2226,11 +2370,6 @@ int tracefs_synth_echo_cmd(struct trace_seq *seq,
 	trace_seq_printf(seq, "echo '%s' >> %s/events/%s/%s/trigger\n",
 			 hist, path, synth->end_event->system,
 			 synth->end_event->name);
-
-	if (new_event) {
-		tracefs_dynevent_free(synth->dyn_event);
-		synth->dyn_event = NULL;
-	}
 
 	ret = 0;
  out_free:

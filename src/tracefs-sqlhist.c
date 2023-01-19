@@ -30,6 +30,12 @@ enum alias_type {
 	ALIAS_FIELD,
 };
 
+enum field_type {
+	FIELD_NONE,
+	FIELD_FROM,
+	FIELD_TO,
+};
+
 #define for_each_field(expr, field, table) \
 	for (expr = (table)->fields; expr; expr = (field)->next)
 
@@ -42,6 +48,7 @@ struct field {
 	const char		*label;
 	const char		*field;
 	const char		*type;
+	enum field_type		ftype;
 };
 
 struct filter {
@@ -167,7 +174,7 @@ static void parse_error(struct sqlhist_bison *sb, const char *text,
 	va_end(ap);
 }
 
-static inline unsigned int quick_hash(const char *str)
+__hidden unsigned int quick_hash(const char *str)
 {
 	unsigned int val = 0;
 	int len = strlen(str);
@@ -253,6 +260,7 @@ __hidden int add_selection(struct sqlhist_bison *sb, void *select,
 
 	switch (expr->type) {
 	case EXPR_FIELD:
+		expr->field.label = name;
 		break;
 	case EXPR_COMPARE:
 		expr->compare.name = name;
@@ -285,6 +293,8 @@ static struct expr *find_field(struct sqlhist_bison *sb,
 		if (!strcmp(field->raw, raw)) {
 			if (label && !field->label)
 				field->label = label;
+			if (label && strcmp(label, field->label) != 0)
+				continue;
 			return expr;
 		}
 
@@ -562,6 +572,9 @@ static int test_field_exists(struct tep_handle *tep,
 		tfield = tep_find_any_field(field->event, field_name);
 	free(field_name);
 
+	if (!tfield && (!strcmp(field->field, "COMM") || !strcmp(field->field, "comm")))
+		tfield = (void *)1L;
+
 	if (tfield)
 		return 0;
 
@@ -580,6 +593,7 @@ static int update_vars(struct tep_handle *tep,
 {
 	struct sqlhist_bison *sb = table->sb;
 	struct field *event_field = &expr->field;
+	enum field_type ftype = FIELD_NONE;
 	struct tep_event *event;
 	struct field *field;
 	const char *label;
@@ -588,6 +602,11 @@ static int update_vars(struct tep_handle *tep,
 	const char *system;
 	const char *p;
 	int label_len = 0, event_len, system_len;
+
+	if (expr == table->to)
+		ftype = FIELD_TO;
+	else if (expr == table->from)
+		ftype = FIELD_FROM;
 
 	p = strchr(raw, '.');
 	if (p) {
@@ -670,6 +689,7 @@ static int update_vars(struct tep_handle *tep,
 		field->event_name = event_name;
 		field->event = event;
 		field->field = raw + len + 1;
+		field->ftype = ftype;
 
 		if (!strcmp(field->field, "TIMESTAMP"))
 			field->field = store_str(sb, TRACEFS_TIMESTAMP);
@@ -887,20 +907,21 @@ static int verify_filter_error(struct sqlhist_bison *sb, struct expr *expr,
 }
 
 static int do_verify_filter(struct sqlhist_bison *sb, struct filter *filter,
-			    const char **system, const char **event)
+			    const char **system, const char **event,
+			    enum field_type *ftype)
 {
 	int ret;
 
 	if (filter->type == FILTER_OR ||
 	    filter->type == FILTER_AND) {
-		ret = do_verify_filter(sb, &filter->lval->filter, system, event);
+		ret = do_verify_filter(sb, &filter->lval->filter, system, event, ftype);
 		if (ret)
 			return ret;
-		return do_verify_filter(sb, &filter->rval->filter, system, event);
+		return do_verify_filter(sb, &filter->rval->filter, system, event, ftype);
 	}
 	if (filter->type == FILTER_GROUP ||
 	    filter->type == FILTER_NOT_GROUP) {
-		return do_verify_filter(sb, &filter->lval->filter, system, event);
+		return do_verify_filter(sb, &filter->lval->filter, system, event, ftype);
 	}
 
 	/*
@@ -910,6 +931,7 @@ static int do_verify_filter(struct sqlhist_bison *sb, struct filter *filter,
 	if (!*system && !*event) {
 		*system = filter->lval->field.system;
 		*event = filter->lval->field.event_name;
+		*ftype = filter->lval->field.ftype;
 		return 0;
 	}
 
@@ -921,7 +943,8 @@ static int do_verify_filter(struct sqlhist_bison *sb, struct filter *filter,
 }
 
 static int verify_filter(struct sqlhist_bison *sb, struct filter *filter,
-			 const char **system, const char **event)
+			 const char **system, const char **event,
+			 enum field_type *ftype)
 {
 	int ret;
 
@@ -932,17 +955,17 @@ static int verify_filter(struct sqlhist_bison *sb, struct filter *filter,
 	case FILTER_NOT_GROUP:
 		break;
 	default:
-		return do_verify_filter(sb, filter, system, event);
+		return do_verify_filter(sb, filter, system, event, ftype);
 	}
 
-	ret = do_verify_filter(sb, &filter->lval->filter, system, event);
+	ret = do_verify_filter(sb, &filter->lval->filter, system, event, ftype);
 	if (ret)
 		return ret;
 
 	switch (filter->type) {
 	case FILTER_OR:
 	case FILTER_AND:
-		return do_verify_filter(sb, &filter->rval->filter, system, event);
+		return do_verify_filter(sb, &filter->rval->filter, system, event, ftype);
 	default:
 		return 0;
 	}
@@ -1260,7 +1283,7 @@ static void where_no_to_error(struct sqlhist_bison *sb, struct expr *expr,
 
 static int verify_field_type(struct tep_handle *tep,
 			     struct sqlhist_bison *sb,
-			     struct expr *expr)
+			     struct expr *expr, int *cnt)
 {
 	struct field *field = &expr->field;
 	struct tep_event *event;
@@ -1339,6 +1362,17 @@ static int verify_field_type(struct tep_handle *tep,
 		if (tfield->flags & (TEP_FIELD_IS_STRING | TEP_FIELD_IS_ARRAY))
 			goto fail_type;
 		ret = TRACEFS_HIST_KEY_LOG;
+	} else if (!strncmp(type, "buckets", 7)) {
+		if (type[7] != '=' || !isdigit(type[8])) {
+			parse_error(sb, field->raw,
+				    "buckets type must have '=[number]' after it\n");
+			ret = -1;
+			goto out;
+		}
+		*cnt = atoi(&type[8]);
+		if (tfield->flags & (TEP_FIELD_IS_STRING | TEP_FIELD_IS_ARRAY))
+			goto fail_type;
+		ret = TRACEFS_HIST_KEY_BUCKETS;
 	} else {
 		parse_error(sb, field->raw,
 			    "Cast of '%s' to unknown type '%s'\n",
@@ -1449,17 +1483,19 @@ static struct tracefs_synth *build_synth(struct tep_handle *tep,
 		if (expr->type == EXPR_FIELD) {
 			ret = -1;
 			field = &expr->field;
-			if (field->system == start_system &&
+			if (field->ftype != FIELD_TO &&
+			    field->system == start_system &&
 			    field->event_name == start_event) {
 				int type;
-				type = verify_field_type(tep, table->sb, expr);
+				int cnt = 0;
+				type = verify_field_type(tep, table->sb, expr, &cnt);
 				if (type < 0)
 					goto free;
 				if (type != HIST_COUNTER_TYPE)
 					non_val = true;
 				ret = synth_add_start_field(synth,
 						field->field, field->label,
-						type);
+						type, cnt);
 			} else if (table->to) {
 				ret = tracefs_synth_add_end_field(synth,
 						field->field, field->label);
@@ -1498,16 +1534,18 @@ static struct tracefs_synth *build_synth(struct tep_handle *tep,
 	for (expr = table->where; expr; expr = expr->next) {
 		const char *filter_system = NULL;
 		const char *filter_event = NULL;
+		enum field_type ftype = FIELD_NONE;
 		bool *started;
 		bool start;
 
 		ret = verify_filter(table->sb, &expr->filter, &filter_system,
-				    &filter_event);
+				    &filter_event, &ftype);
 		if (ret < 0)
 			goto free;
 
 		start = filter_system == start_system &&
-			filter_event == start_event;
+			filter_event == start_event &&
+			ftype != FIELD_TO;
 
 		if (start)
 			started = &started_start;
