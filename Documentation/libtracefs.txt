@@ -15,6 +15,9 @@ Locations of tracing files and directories:
 	char pass:[*]*tracefs_get_tracing_file*(const char pass:[*]_name_);
 	void *tracefs_put_tracing_file*(char pass:[*]_name_);
 	const char pass:[*]*tracefs_tracing_dir*(void);
+	const char pass:[*]*tracefs_debug_dir*(void);
+	int *tracefs_set_tracing_dir*(char pass:[*]_tracing_dir_)
+	int *tracefs_tracing_dir_is_mounted*(bool _mount_, const char pass:[**]_path_);
 
 Trace instances:
 	struct tracefs_instance pass:[*]*tracefs_instance_create*(const char pass:[*]_name_);
@@ -43,6 +46,8 @@ Trace instances:
 	char pass:[*]*tracefs_instance_get_affinity*(struct tracefs_instance pass:[*]_instance_);
 	int *tracefs_instance_get_affinity_set*(struct tracefs_instance pass:[*]_instance_, cpu_set_t pass:[*]_set_, size_t _set_size_);
 	char pass:[*]*tracefs_instance_get_affinity_raw*(struct tracefs_instance pass:[*]_instance_);
+	size_t *tracefs_instance_get_buffer_size*(struct tracefs_instance pass:[*]_instance_, int _cpu_);
+	int *tracefs_instance_set_buffer_size*(struct tracefs_instance pass:[*]_instance_, size_t _size_, int _cpu_);
 
 Trace events:
 	char pass:[*]pass:[*]*tracefs_event_systems*(const char pass:[*]_tracing_dir_);
@@ -51,8 +56,21 @@ Trace events:
                            const char pass:[*]_event_);
 	int *tracefs_event_disable*(struct tracefs_instance pass:[*]_instance_, const char pass:[*]_system_,
                             const char pass:[*]_event_);
+	enum tracefs_enable_state *tracefs_event_is_enabled*(struct tracefs_instance pass:[*]_instance_,
+				 const char pass:[*]_system_, const char pass:[*]_event_);
 	int *tracefs_iterate_raw_events*(struct tep_handle pass:[*]_tep_, struct tracefs_instance pass:[*]_instance_, cpu_set_t pass:[*]_cpus_, int _cpu_size_, int (pass:[*]_callback_)(struct tep_event pass:[*], struct tep_record pass:[*], int, void pass:[*]), void pass:[*]_callback_context_);
 	void *tracefs_iterate_stop*(struct tracefs_instance pass:[*]_instance_);
+	int *tracefs_follow_event*(struct tep_handle pass:[*]_tep_, struct tracefs_instance pass:[*]_instance_,
+				  const char pass:[*]_system_, const char pass:[*]_event_name_,
+				  int (pass:[*]_callback_)(struct tep_event pass:[*],
+						  struct tep_record pass:[*],
+						  int, void pass:[*]),
+				  void pass:[*]_callback_data_);
+	int *tracefs_follow_missed_events*(struct tracefs_instance pass:[*]_instance_,
+				  int (pass:[*]_callback_)(struct tep_event pass:[*],
+						  struct tep_record pass:[*],
+						  int, void pass:[*]),
+				  void pass:[*]_callback_data_);
 	struct tep_handle pass:[*]*tracefs_local_events*(const char pass:[*]_tracing_dir_);
 	struct tep_handle pass:[*]*tracefs_local_events_system*(const char pass:[*]_tracing_dir_, const char pass:[*] const pass:[*]_sys_names_);
 	int *tracefs_fill_local_events*(const char pass:[*]_tracing_dir_, struct tep_handle pass:[*]_tep_, int pass:[*]_parsing_failures_);
@@ -112,6 +130,7 @@ Trace options:
 
 Ftrace tracers:
 	char pass:[*]pass:[*]*tracefs_tracers*(const char pass:[*]_tracing_dir_);
+	bool *tracefs_tracer_available*(const char pass:[*]_tracing_dir_, const char pass:[*]_tracer_);
 	int *tracefs_tracer_set*(struct tracefs_instance pass:[*]_instance_, enum tracefs_tracers _tracer_);
 	int *tracefs_tracer_set*(struct tracefs_instance pass:[*]_instance_, enum tracefs_tracers _tracer_, const char pass:[*]_name_);
 	int *tracefs_tracer_clear*(struct tracefs_instance pass:[*]_instance_);
@@ -144,11 +163,15 @@ Dynamic event generic APIs:
 Even probes (eprobes):
 	struct tracefs_dynevent pass:[*] *tracefs_eprobe_alloc*(const char pass:[*]_system_, const char pass:[*]_event_, const char pass:[*]_target_system_, const char pass:[*]_target_event_, const char pass:[*]_fetchargs_);
 
-Kprobes and Kretprobes:
+Uprobes, Kprobes and Kretprobes:
 	struct tracefs_dynevent pass:[*] *tracefs_kprobe_alloc*(const char pass:[*]_system_, const char pass:[*]_event_, const char pass:[*]_addr_, const char pass:[*]_format_);
 	struct tracefs_dynevent pass:[*] *tracefs_kretprobe_alloc*(const char pass:[*]_system_, const char pass:[*]_event_, const char pass:[*]_addr_, const char pass:[*]_format_, unsigned int _max_);
 	int *tracefs_kprobe_raw*(const char pass:[*]_system_, const char pass:[*]_event_, const char pass:[*]_addr_, const char pass:[*]_format_);
 	int *tracefs_kretprobe_raw*(const char pass:[*]_system_, const char pass:[*]_event_, const char pass:[*]_addr_, const char pass:[*]_format_);
+	*tracefs_uprobe_alloc*(const char pass:[*]_system_, const char pass:[*]_event_,
+		     const char pass:[*]_file_, unsigned long long _offset_, const char pass:[*]_fetchargs_)
+	*tracefs_uretprobe_alloc*(const char pass:[*]_system_, const char pass:[*]_event_,
+		     const char pass:[*]_file_, unsigned long long _offset_, const char pass:[*]_fetchargs_);
 
 Synthetic events:
 	struct tracefs_synth pass:[*]*tracefs_sql*(struct tep_handle pass:[*]_tep_, const char pass:[*]_name_,
@@ -223,9 +246,14 @@ Histograms:
 	struct tracefs_hist pass:[*]*tracefs_hist_alloc_nd*(struct tracefs_tep pass:[*] _tep_,
 				const char pass:[*]_system_, const char pass:[*]_event_,
 				struct tracefs_hist_axis pass:[*]_axes_);
+	struct tracefs_hist pass:[*]*tracefs_hist_alloc_nd_cnt*(struct tep_handle pass:[*]_tep_,
+				  const char pass:[*]_system_, const char pass:[*]_event_name_,
+				  struct tracefs_hist_axis_cnt pass:[*]_axes_);
 	void *tracefs_hist_free*(struct tracefs_hist pass:[*]_hist_);
 	int *tracefs_hist_add_key*(struct tracefs_hist pass:[*]_hist_, const char pass:[*]_key_,
 				 enum tracefs_hist_key_type _type_);
+	int *tracefs_hist_add_key_cnt*(struct tracefs_hist pass:[*]_hist_, const char pass:[*]_key_,
+				 enum tracefs_hist_key_type _type_, int _cnt_);
 	int *tracefs_hist_add_value*(struct tracefs_hist pass:[*]_hist_, const char pass:[*]_value_);
 	int *tracefs_hist_add_sort_key*(struct tracefs_hist pass:[*]_hist_,
 				      const char pass:[*]_sort_key_);
@@ -254,6 +282,21 @@ Histograms:
 	int *tracefs_hist_pause*(struct tracefs_instance pass:[*]_instance_, struct tracefs_hist pass:[*]_hist_);
 	int *tracefs_hist_continue*(struct tracefs_instance pass:[*]_instance_, struct tracefs_hist pass:[*]_hist_);
 	int *tracefs_hist_reset*(struct tracefs_instance pass:[*]_instance_, struct tracefs_hist pass:[*]_hist_);
+
+Recording of trace_pipe_raw files:
+	struct tracefs_cpu pass:[*]*tracefs_cpu_open*(struct tracefs_instance pass:[*]_instance_,
+					     int _cpu_, bool _nonblock_);
+	struct tracefs_cpu pass:[*]*tracefs_cpu_alloc_fd*(int _fd_, int _subbuf_size_, bool _nonblock_);
+	void *tracefs_cpu_close*(struct tracefs_cpu pass:[*]_tcpu_);
+	void *tracefs_cpu_free_fd*(struct tracefs_cpu pass:[*]_tcpu_);
+	int *tracefs_cpu_read_size*(struct tracefs_cpu pass:[*]_tcpu_);
+	int *tracefs_cpu_read*(struct tracefs_cpu pass:[*]_tcpu_, void pass:[*]_buffer_, bool _nonblock_);
+	int *tracefs_cpu_buffered_read*(struct tracefs_cpu pass:[*]_tcpu_, void pass:[*]_buffer_, bool _nonblock_);
+	int *tracefs_cpu_write*(struct tracefs_cpu pass:[*]_tcpu_, int _wfd_, bool _nonblock_);
+	int *tracefs_cpu_stop*(struct tracefs_cpu pass:[*]_tcpu_);
+	int *tracefs_cpu_flush*(struct tracefs_cpu pass:[*]_tcpu_, void pass:[*]_buffer_);
+	int *tracefs_cpu_flush_write*(struct tracefs_cpu pass:[*]_tcpu_, int _wfd_);
+	int *tracefs_cpu_pipe*(struct tracefs_cpu pass:[*]_tcpu_, int _wfd_, bool _nonblock_);
 
 --
 

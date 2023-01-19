@@ -11,13 +11,18 @@
 #include <time.h>
 #include <dirent.h>
 #include <ftw.h>
+#include <libgen.h>
+#include <kbuffer.h>
+#include <pthread.h>
+
+#include <sys/mount.h>
 
 #include <CUnit/CUnit.h>
 #include <CUnit/Basic.h>
 
 #include "tracefs.h"
 
-#define TRACEFS_SUITE		"trasefs library"
+#define TRACEFS_SUITE		"tracefs library"
 #define TEST_INSTANCE_NAME	"cunit_test_iter"
 #define TEST_TRACE_DIR		"/tmp/trace_utest.XXXXXX"
 #define TEST_ARRAY_SIZE		5000
@@ -43,6 +48,10 @@
 #define SQL_5_EVENT	"irq_lat"
 #define SQL_5_SQL	"select end.common_pid as pid, (end.common_timestamp.usecs - start.common_timestamp.usecs) as irq_lat from irq_disable as start join irq_enable as end on start.common_pid = end.common_pid, start.parent_offs == end.parent_offs where start.common_pid != 0"
 #define SQL_5_START	"irq_disable"
+
+#define DEBUGFS_DEFAULT_PATH "/sys/kernel/debug"
+#define TRACEFS_DEFAULT_PATH "/sys/kernel/tracing"
+#define TRACEFS_DEFAULT2_PATH "/sys/kernel/debug/tracing"
 
 static struct tracefs_instance *test_instance;
 static struct tep_handle *test_tep;
@@ -86,20 +95,51 @@ static int test_callback(struct tep_event *event, struct tep_record *record,
 	return 0;
 }
 
+static cpu_set_t *cpuset_save;
+static cpu_set_t *cpuset;
+static int cpu_size;
+
+static void save_affinity(void)
+{
+	int cpus;
+
+	cpus = sysconf(_SC_NPROCESSORS_CONF);
+	cpuset_save = CPU_ALLOC(cpus);
+	cpuset = CPU_ALLOC(cpus);
+	cpu_size = CPU_ALLOC_SIZE(cpus);
+	CU_TEST(cpuset_save != NULL && cpuset != NULL);
+	CU_TEST(sched_getaffinity(0, cpu_size, cpuset_save) == 0);
+}
+
+static void thread_affinity(void)
+{
+	sched_setaffinity(0, cpu_size, cpuset_save);
+}
+
+static void reset_affinity(void)
+{
+	sched_setaffinity(0, cpu_size, cpuset_save);
+	CPU_FREE(cpuset_save);
+	CPU_FREE(cpuset);
+}
+
+static void set_affinity(int cpu)
+{
+	CPU_ZERO_S(cpu_size, cpuset);
+	CPU_SET_S(cpu, cpu_size, cpuset);
+	CU_TEST(sched_setaffinity(0, cpu_size, cpuset) == 0);
+	sched_yield(); /* Force schedule */
+}
+
 static void test_iter_write(struct tracefs_instance *instance)
 {
-	int cpus = sysconf(_SC_NPROCESSORS_CONF);
-	cpu_set_t *cpuset, *cpusave;
-	int cpu_size;
 	char *path;
 	int i, fd;
+	int cpus;
 	int ret;
-	cpuset = CPU_ALLOC(cpus);
-	cpusave = CPU_ALLOC(cpus);
-	cpu_size = CPU_ALLOC_SIZE(cpus);
-	CPU_ZERO_S(cpu_size, cpuset);
 
-	sched_getaffinity(0, cpu_size, cpusave);
+	cpus = sysconf(_SC_NPROCESSORS_CONF);
+	save_affinity();
 
 	path = tracefs_instance_get_file(instance, "trace_marker");
 	CU_TEST(path != NULL);
@@ -113,17 +153,13 @@ static void test_iter_write(struct tracefs_instance *instance)
 		if (!test_array[i].value)
 			test_array[i].value++;
 		CU_TEST(test_array[i].cpu < cpus);
-		CPU_ZERO_S(cpu_size, cpuset);
-		CPU_SET(test_array[i].cpu, cpuset);
-		sched_setaffinity(0, cpu_size, cpuset);
+		set_affinity(test_array[i].cpu);
 		ret = write(fd, test_array + i, sizeof(struct test_sample));
 		CU_TEST(ret == sizeof(struct test_sample));
 	}
 
-	sched_setaffinity(0, cpu_size, cpusave);
+	reset_affinity();
 	close(fd);
-	CPU_FREE(cpuset);
-	CPU_FREE(cpusave);
 }
 
 
@@ -380,6 +416,538 @@ static void test_instance_trace_sql(struct tracefs_instance *instance)
 static void test_trace_sql(void)
 {
 	test_instance_trace_sql(test_instance);
+}
+
+struct test_cpu_data {
+	struct tracefs_instance		*instance;
+	struct tracefs_cpu		*tcpu;
+	struct kbuffer			*kbuf;
+	struct tep_handle		*tep;
+	unsigned long long		missed_events;
+	void				*buf;
+	int				events_per_buf;
+	int				bufsize;
+	int				data_size;
+	int				this_pid;
+	int				fd;
+	bool				done;
+};
+
+static void cleanup_trace_cpu(struct test_cpu_data *data)
+{
+	close(data->fd);
+	tep_free(data->tep);
+	tracefs_cpu_close(data->tcpu);
+	free(data->buf);
+	kbuffer_free(data->kbuf);
+}
+
+#define EVENT_SYSTEM "syscalls"
+#define EVENT_NAME  "sys_enter_getppid"
+
+static int setup_trace_cpu(struct tracefs_instance *instance, struct test_cpu_data *data)
+{
+	struct tep_format_field **fields;
+	struct tep_event *event;
+	char tmpfile[] = "/tmp/utest-libtracefsXXXXXX";
+	int max = 0;
+	int ret;
+	int i;
+
+	/* Make sure tracing is on */
+	tracefs_trace_on(instance);
+
+	memset (data, 0, sizeof(*data));
+
+	data->instance = instance;
+
+	data->fd = mkstemp(tmpfile);
+	CU_TEST(data->fd >= 0);
+	unlink(tmpfile);
+	if (data->fd < 0)
+		return -1;
+
+	data->tep = tracefs_local_events(NULL);
+	CU_TEST(data->tep != NULL);
+	if (!data->tep)
+		goto fail;
+
+	data->tcpu = tracefs_cpu_open(instance, 0, true);
+	CU_TEST(data->tcpu != NULL);
+	if (!data->tcpu)
+		goto fail;
+
+	data->bufsize = tracefs_cpu_read_size(data->tcpu);
+
+	data->buf = calloc(1, data->bufsize);
+	CU_TEST(data->buf != NULL);
+	if (!data->buf)
+		goto fail;
+
+	data->kbuf = kbuffer_alloc(sizeof(long) == 8, !tep_is_bigendian());
+	CU_TEST(data->kbuf != NULL);
+	if (!data->kbuf)
+		goto fail;
+
+	data->data_size = data->bufsize - kbuffer_start_of_data(data->kbuf);
+
+	tracefs_instance_file_clear(instance, "trace");
+
+	event = tep_find_event_by_name(data->tep, EVENT_SYSTEM, EVENT_NAME);
+	CU_TEST(event != NULL);
+	if (!event)
+		goto fail;
+
+	fields = tep_event_fields(event);
+	CU_TEST(fields != NULL);
+	if (!fields)
+		goto fail;
+
+	for (i = 0; fields[i]; i++) {
+		int end = fields[i]->offset + fields[i]->size;
+		if (end > max)
+			max = end;
+	}
+	free(fields);
+
+	CU_TEST(max != 0);
+	if (!max)
+		goto fail;
+
+	data->events_per_buf = data->data_size / max;
+
+	data->this_pid = getpid();
+	ret = tracefs_event_enable(instance, EVENT_SYSTEM, EVENT_NAME);
+	CU_TEST(ret == 0);
+	if (ret)
+		goto fail;
+
+
+	save_affinity();
+	set_affinity(0);
+
+	return 0;
+ fail:
+	cleanup_trace_cpu(data);
+	return -1;
+}
+
+static void shutdown_trace_cpu(struct test_cpu_data *data)
+{
+	struct tracefs_instance *instance = data->instance;
+	int ret;
+
+	reset_affinity();
+
+	ret = tracefs_event_disable(instance, EVENT_SYSTEM, EVENT_NAME);
+	CU_TEST(ret == 0);
+
+	cleanup_trace_cpu(data);
+}
+
+static void call_getppid(int cnt)
+{
+	int i;
+
+	for (i = 0; i < cnt; i++)
+		getppid();
+}
+
+static void test_cpu_read(struct test_cpu_data *data, int expect)
+{
+	struct tracefs_cpu *tcpu = data->tcpu;
+	struct kbuffer *kbuf = data->kbuf;
+	struct tep_record record;
+	void *buf = data->buf;
+	unsigned long long ts;
+	bool first = true;
+	int pid;
+	int ret;
+	int cnt = 0;
+
+	call_getppid(expect);
+
+	for (;;) {
+		ret = tracefs_cpu_read(tcpu, buf, false);
+		CU_TEST(ret > 0 || !first);
+		if (ret <= 0)
+			break;
+		first = false;
+		ret = kbuffer_load_subbuffer(kbuf, buf);
+		CU_TEST(ret == 0);
+		for (;;) {
+			record.data = kbuffer_read_event(kbuf, &ts);
+			if (!record.data)
+				break;
+			record.ts = ts;
+			pid = tep_data_pid(data->tep, &record);
+			if (pid == data->this_pid)
+				cnt++;
+			kbuffer_next_event(kbuf, NULL);
+		}
+	}
+	CU_TEST(cnt == expect);
+}
+
+static void test_instance_trace_cpu_read(struct tracefs_instance *instance)
+{
+	struct test_cpu_data data;
+
+	if (setup_trace_cpu(instance, &data))
+		return;
+
+	test_cpu_read(&data, 1);
+	test_cpu_read(&data, data.events_per_buf / 2);
+	test_cpu_read(&data, data.events_per_buf);
+	test_cpu_read(&data, data.events_per_buf + 1);
+	test_cpu_read(&data, data.events_per_buf * 50);
+
+	shutdown_trace_cpu(&data);
+}
+
+static void test_trace_cpu_read(void)
+{
+	test_instance_trace_cpu_read(NULL);
+	test_instance_trace_cpu_read(test_instance);
+}
+
+struct follow_data {
+	struct tep_event *sched_switch;
+	struct tep_event *sched_waking;
+	struct tep_event *function;
+	int missed;
+};
+
+static int switch_callback(struct tep_event *event, struct tep_record *record,
+			   int cpu, void *data)
+{
+	struct follow_data *fdata = data;
+
+	CU_TEST(cpu == record->cpu);
+	CU_TEST(event->id == fdata->sched_switch->id);
+	return 0;
+}
+
+static int waking_callback(struct tep_event *event, struct tep_record *record,
+			   int cpu, void *data)
+{
+	struct follow_data *fdata = data;
+
+	CU_TEST(cpu == record->cpu);
+	CU_TEST(event->id == fdata->sched_waking->id);
+	return 0;
+}
+
+static int function_callback(struct tep_event *event, struct tep_record *record,
+			     int cpu, void *data)
+{
+	struct follow_data *fdata = data;
+
+	CU_TEST(cpu == record->cpu);
+	CU_TEST(event->id == fdata->function->id);
+	return 0;
+}
+
+static int missed_callback(struct tep_event *event, struct tep_record *record,
+			     int cpu, void *data)
+{
+	struct follow_data *fdata = data;
+
+	fdata->missed = record->missed_events;
+	return 0;
+}
+
+static int all_callback(struct tep_event *event, struct tep_record *record,
+			int cpu, void *data)
+{
+	struct follow_data *fdata = data;
+
+	CU_TEST(fdata->missed == record->missed_events);
+	fdata->missed = 0;
+	return 0;
+}
+
+static void *stop_thread(void *arg)
+{
+	struct tracefs_instance *instance = arg;
+
+	sleep(1);
+	tracefs_iterate_stop(instance);
+	return NULL;
+}
+
+static void test_instance_follow_events(struct tracefs_instance *instance)
+{
+	struct follow_data fdata;
+	struct tep_handle *tep;
+	pthread_t thread;
+	int ret;
+
+	memset(&fdata, 0, sizeof(fdata));
+
+	tep = tracefs_local_events(NULL);
+	CU_TEST(tep != NULL);
+	if (!tep)
+		return;
+
+	fdata.sched_switch = tep_find_event_by_name(tep, "sched", "sched_switch");
+	CU_TEST(fdata.sched_switch != NULL);
+	if (!fdata.sched_switch)
+		return;
+
+	fdata.sched_waking = tep_find_event_by_name(tep, "sched", "sched_waking");
+	CU_TEST(fdata.sched_waking != NULL);
+	if (!fdata.sched_waking)
+		return;
+
+	fdata.function = tep_find_event_by_name(tep, "ftrace", "function");
+	CU_TEST(fdata.function != NULL);
+	if (!fdata.function)
+		return;
+
+	ret = tracefs_follow_event(tep, instance, "sched", "sched_switch",
+				   switch_callback, &fdata);
+	CU_TEST(ret == 0);
+
+	ret = tracefs_follow_event(tep, instance, "sched", "sched_waking",
+				   waking_callback, &fdata);
+	CU_TEST(ret == 0);
+
+	ret = tracefs_follow_event(tep, instance, "ftrace", "function",
+				   function_callback, &fdata);
+	CU_TEST(ret == 0);
+
+	ret = tracefs_follow_missed_events(instance, missed_callback, &fdata);
+	CU_TEST(ret == 0);
+
+	ret = tracefs_event_enable(instance, "sched", "sched_switch");
+	CU_TEST(ret == 0);
+
+	ret = tracefs_event_enable(instance, "sched", "sched_waking");
+	CU_TEST(ret == 0);
+
+	ret = tracefs_tracer_set(instance, TRACEFS_TRACER_FUNCTION);
+	CU_TEST(ret == 0);
+
+	pthread_create(&thread, NULL, stop_thread, instance);
+
+	ret = tracefs_iterate_raw_events(tep, instance, NULL, 0, all_callback, &fdata);
+	CU_TEST(ret == 0);
+
+	pthread_join(thread, NULL);
+
+	tracefs_tracer_clear(instance);
+	tracefs_event_disable(instance, NULL, NULL);
+}
+
+static void test_follow_events(void)
+{
+	test_instance_follow_events(NULL);
+	test_instance_follow_events(test_instance);
+}
+
+extern char *find_tracing_dir(bool debugfs, bool mount);
+static void test_mounting(void)
+{
+	const char *tracing_dir;
+	const char *debug_dir;
+	struct stat st;
+	char *save_tracing = NULL;
+	char *save_debug = NULL;
+	char *path;
+	char *dir;
+	int ret;
+
+	/* First, unmount all instances of debugfs */
+	do {
+		dir = find_tracing_dir(true, false);
+		if (dir) {
+			ret = umount(dir);
+			CU_TEST(ret == 0);
+			if (ret < 0)
+				return;
+			/* Save the first instance that's not /sys/kernel/debug */
+			if (!save_debug && strcmp(dir, DEBUGFS_DEFAULT_PATH) != 0)
+				save_debug = dir;
+			else
+				free(dir);
+		}
+	} while (dir);
+
+	/* Next, unmount all instances of tracefs */
+	do {
+		dir = find_tracing_dir(false, false);
+		if (dir) {
+			ret = umount(dir);
+			CU_TEST(ret == 0);
+			if (ret < 0)
+				return;
+			/* Save the first instance that's not in /sys/kernel/ */
+			if (!save_tracing && strncmp(dir, "/sys/kernel/", 12) != 0)
+				save_tracing = dir;
+			else
+				free(dir);
+		}
+	} while (dir);
+
+	/* Mount first the tracing dir (which should mount at /sys/kernel/tracing */
+	tracing_dir = tracefs_tracing_dir();
+	CU_TEST(tracing_dir != NULL);
+	if (tracing_dir != NULL) {
+		CU_TEST(strcmp(tracing_dir, TRACEFS_DEFAULT_PATH) == 0 ||
+			strcmp(tracing_dir, TRACEFS_DEFAULT2_PATH) == 0);
+		if (strncmp(tracing_dir, "/sys/kernel/", 12) != 0)
+			printf("Tracing directory mounted at '%s'\n",
+			       tracing_dir);
+
+		/* Make sure the directory has content.*/
+		asprintf(&path, "%s/trace", tracing_dir);
+		CU_TEST(stat(path, &st) == 0);
+		free(path);
+	}
+
+	/* Now mount debugfs dir, which should mount at /sys/kernel/debug */
+	debug_dir = tracefs_debug_dir();
+	CU_TEST(debug_dir != NULL);
+	if (debug_dir != NULL) {
+		CU_TEST(strcmp(debug_dir, DEBUGFS_DEFAULT_PATH) == 0);
+		if (strcmp(debug_dir, DEBUGFS_DEFAULT_PATH) != 0)
+			printf("debug directory mounted at '%s'\n",
+			       debug_dir);
+
+		/* Make sure the directory has content.*/
+		asprintf(&path, "%s/tracing", debug_dir);
+		CU_TEST(stat(path, &st) == 0);
+		free(path);
+	}
+
+	if (save_debug)
+		mount("debugfs", save_debug, "debugfs", 0, NULL);
+
+	if (save_tracing &&
+	    (!save_debug || strncmp(save_debug, save_tracing, strlen(save_debug)) != 0))
+		mount("tracefs", save_tracing, "tracefs", 0, NULL);
+
+	free(save_debug);
+	free(save_tracing);
+}
+
+static int read_trace_cpu_file(struct test_cpu_data *data)
+{
+	unsigned long long ts;
+	struct tep_record record;
+	struct kbuffer *kbuf = data->kbuf;
+	void *buf = data->buf;
+	bool first = true;
+	int bufsize = data->bufsize;
+	int fd = data->fd;
+	int missed;
+	int pid;
+	int ret;
+	int cnt = 0;
+
+	ret = lseek64(fd, 0, SEEK_SET);
+	CU_TEST(ret == 0);
+	if (ret)
+		return -1;
+
+	for (;;) {
+		ret = read(fd, buf, bufsize);
+		CU_TEST(ret > 0 || !first);
+		if (ret <= 0)
+			break;
+		first = false;
+
+		ret = kbuffer_load_subbuffer(kbuf, buf);
+		CU_TEST(ret == 0);
+		missed = kbuffer_missed_events(kbuf);
+		if (missed)
+			printf("missed events %d\n", missed);
+		for (;;) {
+			record.data = kbuffer_read_event(kbuf, &ts);
+			if (!record.data)
+				break;
+			record.ts = ts;
+			pid = tep_data_pid(data->tep, &record);
+			if (pid == data->this_pid)
+				cnt++;
+			kbuffer_next_event(kbuf, NULL);
+		}
+	}
+	return ret == 0 ? cnt : ret;
+}
+
+static void *trace_cpu_thread(void *arg)
+{
+	struct test_cpu_data *data = arg;
+	struct tracefs_cpu *tcpu = data->tcpu;
+	int fd = data->fd;
+	long ret = 0;
+
+	thread_affinity();
+
+	while (!data->done && ret >= 0) {
+		ret = tracefs_cpu_write(tcpu, fd, false);
+		if (ret < 0 && errno == EAGAIN)
+			ret = 0;
+	}
+	if (ret >= 0 || errno == EAGAIN) {
+		do {
+			ret = tracefs_cpu_flush_write(tcpu, fd);
+		} while (ret > 0);
+	}
+
+	return (void *)ret;
+}
+
+static void test_cpu_pipe(struct test_cpu_data *data, int expect)
+{
+	pthread_t thread;
+	void *retval;
+	long ret;
+	int cnt;
+
+	tracefs_instance_file_clear(data->instance, "trace");
+	ftruncate(data->fd, 0);
+
+	data->done = false;
+
+	pthread_create(&thread, NULL, trace_cpu_thread, data);
+	sleep(1);
+
+	call_getppid(expect);
+
+	data->done = true;
+	tracefs_cpu_stop(data->tcpu);
+	pthread_join(thread, &retval);
+	ret = (long)retval;
+	CU_TEST(ret >= 0);
+
+	cnt = read_trace_cpu_file(data);
+
+	CU_TEST(cnt == expect);
+}
+
+static void test_instance_trace_cpu_pipe(struct tracefs_instance *instance)
+{
+	struct test_cpu_data data;
+
+	if (setup_trace_cpu(instance, &data))
+		return;
+
+	test_cpu_pipe(&data, 1);
+	test_cpu_pipe(&data, data.events_per_buf / 2);
+	test_cpu_pipe(&data, data.events_per_buf);
+	test_cpu_pipe(&data, data.events_per_buf + 1);
+	test_cpu_pipe(&data, data.events_per_buf * 1000);
+
+	shutdown_trace_cpu(&data);
+}
+
+static void test_trace_cpu_pipe(void)
+{
+	test_instance_trace_cpu_pipe(NULL);
+	test_instance_trace_cpu_pipe(test_instance);
 }
 
 static struct tracefs_dynevent **get_dynevents_check(enum tracefs_dynevent_type types, int count)
@@ -1404,6 +1972,9 @@ static void test_instance_tracers(struct tracefs_instance *instance)
 	tracers = tracefs_tracers(tdir);
 	CU_TEST(tracers != NULL);
 
+	for (i = 0; tracers[i]; i++)
+		CU_TEST(tracefs_tracer_available(tdir, tracers[i]));
+
 	tfile = tracefs_instance_file_read(NULL, ALL_TRACERS, NULL);
 
 	tracer = strtok(tfile, " ");
@@ -1701,8 +2272,11 @@ void del_trace_dir(char *dir)
 
 static void test_custom_trace_dir(void)
 {
+	char *tdir = "/tmp/custom_tracefs";
 	struct tracefs_instance *instance;
 	char *dname = copy_trace_dir();
+	const char *trace_dir;
+	char *tfile;
 
 	instance = tracefs_instance_alloc(dname, NULL);
 	CU_TEST(instance != NULL);
@@ -1717,6 +2291,22 @@ static void test_custom_trace_dir(void)
 	tracefs_instance_free(instance);
 	del_trace_dir(dname);
 	free(dname);
+
+	trace_dir = tracefs_tracing_dir();
+	CU_TEST(trace_dir != NULL);
+	CU_TEST(tracefs_set_tracing_dir(tdir) == 0);
+	CU_TEST(strcmp(tdir, tracefs_tracing_dir()) == 0);
+	tfile = tracefs_get_tracing_file("trace");
+	CU_TEST(tfile != NULL);
+	CU_TEST(strcmp(tdir, dirname(tfile)) == 0);
+	free(tfile);
+
+	CU_TEST(tracefs_set_tracing_dir(NULL) == 0);
+	CU_TEST(strcmp(trace_dir, tracefs_tracing_dir()) == 0);
+	tfile = tracefs_get_tracing_file("trace");
+	CU_TEST(tfile != NULL);
+	CU_TEST(strcmp(trace_dir, dirname(tfile)) == 0);
+	free(tfile);
 }
 
 static int test_suite_destroy(void)
@@ -1750,6 +2340,12 @@ void test_tracefs_lib(void)
 		fprintf(stderr, "Suite \"%s\" cannot be ceated\n", TRACEFS_SUITE);
 		return;
 	}
+
+	CU_add_test(suite, "Test tracefs/debugfs mounting", test_mounting);
+	CU_add_test(suite, "trace cpu read",
+		    test_trace_cpu_read);
+	CU_add_test(suite, "trace cpu pipe",
+		    test_trace_cpu_pipe);
 	CU_add_test(suite, "trace sql",
 		    test_trace_sql);
 	CU_add_test(suite, "tracing file / directory APIs",
@@ -1762,6 +2358,10 @@ void test_tracefs_lib(void)
 		    test_system_event);
 	CU_add_test(suite, "tracefs_iterate_raw_events API",
 		    test_iter_raw_events);
+
+	/* Follow events test must be after the iterate raw events above */
+	CU_add_test(suite, "Follow events", test_follow_events);
+
 	CU_add_test(suite, "tracefs_tracers API",
 		    test_tracers);
 	CU_add_test(suite, "tracefs_local events API",

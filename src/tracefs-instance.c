@@ -334,7 +334,7 @@ char *tracefs_instance_get_dir(struct tracefs_instance *instance)
 	int ret;
 
 	if (!instance) /* Top instance of default system trace directory */
-		return trace_find_tracing_dir();
+		return trace_find_tracing_dir(false);
 
 	if (!instance->name)
 		return strdup(instance->trace_dir);
@@ -361,6 +361,70 @@ const char *tracefs_instance_get_name(struct tracefs_instance *instance)
 	if (instance)
 		return instance->name;
 	return NULL;
+}
+
+/**
+ * tracefs_instance_get_buffer_size - return the buffer size of the ring buffer
+ * @instance: The instance to get the buffer size from
+ * @cpu: if less that zero, will return the total size, otherwise the cpu size
+ *
+ * Returns the buffer size. If @cpu is less than zero, it returns the total size
+ * of the ring buffer otherwise it returs the size of the buffer for the given
+ * CPU.
+ *
+ * Returns -1 on error.
+ */
+ssize_t tracefs_instance_get_buffer_size(struct tracefs_instance *instance, int cpu)
+{
+	unsigned long long size;
+	char *path;
+	char *val;
+	int ret;
+
+	if (cpu < 0) {
+		val = tracefs_instance_file_read(instance, "buffer_total_size_kb", NULL);
+	} else {
+		ret = asprintf(&path, "per_cpu/cpu%d/buffer_size_kb", cpu);
+		if (ret < 0)
+			return ret;
+
+		val = tracefs_instance_file_read(instance, path, NULL);
+		free(path);
+	}
+
+	if (!val)
+		return -1;
+
+	size = strtoull(val, NULL, 0);
+	free(val);
+	return size;
+}
+
+int tracefs_instance_set_buffer_size(struct tracefs_instance *instance, size_t size, int cpu)
+{
+	char *path;
+	char *val;
+	int ret;
+
+	ret = asprintf(&val, "%zd", size);
+	if (ret < 0)
+		return ret;
+
+	if (cpu < 0) {
+		ret = tracefs_instance_file_write(instance, "buffer_size_kb", val);
+	} else {
+		ret = asprintf(&path, "per_cpu/cpu%d/buffer_size_kb", cpu);
+		if (ret < 0) {
+			free(val);
+			return ret;
+		}
+
+		ret = tracefs_instance_file_write(instance, path, val);
+		free(path);
+	}
+	free(val);
+
+	return ret < 0 ? -1 : 0;
 }
 
 /**
