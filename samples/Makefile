@@ -21,6 +21,7 @@ EXAMPLES += hist-cont
 EXAMPLES += tracer
 EXAMPLES += stream
 EXAMPLES += instances-affinity
+EXAMPLES += cpu
 
 TARGETS :=
 TARGETS += sqlhist
@@ -46,7 +47,7 @@ sqlhist: $(sdir)/sqlhist
 $(TARGETS): $(sdir)
 
 # sqlhist is unique and stands on its own
-$(sdir)/sqlhist: $(bdir)/sqlhist.c
+$(sdir)/sqlhist: $(bdir)/sqlhist.c $(LIBTRACEFS_STATIC)
 	$(call do_sample_build,$@,$<)
 
 $(sdir)/%: $(bdir)/%.o
@@ -65,5 +66,10 @@ $(EXAMPLES): $(patsubst %,$(sdir)/%,$(TARGETS))
 $(bdir)/%.o: $(bdir)/%.c
 	$(call do_sample_obj,$@,$^)
 
+$(bdir)/XX.o: $(bdir)/hist.c
+	$(CC) -g -Wall $(CFLAGS) -c -o $@ $^ -I../include/ $(LIBTRACEEVENT_INCLUDES)
+
 clean:
 	$(Q)$(call do_clean,$(sdir)/* $(bdir)/sqlhist.c $(bdir)/sqlhist.o)
+
+.PHONY: sqlhist
