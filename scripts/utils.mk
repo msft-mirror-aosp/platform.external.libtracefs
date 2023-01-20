@@ -53,12 +53,12 @@ endif
 
 do_fpic_compile =					\
 	($(print_fpic_compile)				\
-	$(CC) -c $(CPPFLAGS) $(CFLAGS) $(EXT) -fPIC $< -o $@)
+	$(CC) -Wp,-MMD,$(@D)/.$(@F).d,-MT,$@ -MP -c $(CPPFLAGS) $(CFLAGS) $(EXT) -fPIC $< -o $@)
 
 do_compile =							\
 	($(if $(GENERATE_PIC), $(do_fpic_compile),		\
 	 $(print_compile)					\
-	 $(CC) -c $(CPPFLAGS) $(CFLAGS) $(EXT) $< -o $@))
+	 $(CC) -Wp,-MMD,$(@D)/.$(@F).d,-MT,$@ -MP -c $(CPPFLAGS) $(CFLAGS) $(EXT) $< -o $@))
 
 do_app_build =						\
 	($(print_app_build)				\
@@ -101,7 +101,7 @@ extract_example =				\
 
 do_sample_build =							\
 	$(Q)($(print_sample_build)					\
-	$(CC) -o $1 $2 $(CFLAGS) $(LIBTRACEFS_STATIC) $(LIBTRACEEVENT_LIBS))
+	$(CC) -o $1 $2 $(CFLAGS) $(LIBTRACEFS_STATIC) $(LIBTRACEEVENT_LIBS) -lpthread)
 
 do_sample_obj =									\
 	$(Q)($(print_sample_obj)						\
