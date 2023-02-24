@@ -35,6 +35,12 @@ static const struct tep_format_field common_timestamp_usecs = {
 	.size			= 8,
 };
 
+static const struct tep_format_field common_comm = {
+	.type			= "char *",
+	.name			= "common_comm",
+	.size			= 16,
+};
+
 /*
  * This also must be able to accept fields that are OK via the histograms,
  * such as common_timestamp.
@@ -42,13 +48,19 @@ static const struct tep_format_field common_timestamp_usecs = {
 static const struct tep_format_field *get_event_field(struct tep_event *event,
 					 const char *field_name)
 {
+	const struct tep_format_field *field;
+
 	if (!strcmp(field_name, TRACEFS_TIMESTAMP))
 		return &common_timestamp;
 
 	if (!strcmp(field_name, TRACEFS_TIMESTAMP_USECS))
 		return &common_timestamp_usecs;
 
-	return tep_find_any_field(event, field_name);
+	field = tep_find_any_field(event, field_name);
+	if (!field && (!strcmp(field_name, "COMM") || !strcmp(field_name, "comm")))
+		return &common_comm;
+
+	return field;
 }
 
 __hidden bool
@@ -423,7 +435,8 @@ int tracefs_filter_string_append(struct tep_event *event, char **filter,
 		free(*filter);
 		*filter = str;
 	}
-	return 0;
+
+	return ret;
 }
 
 static int error_msg(char **err, char *str,

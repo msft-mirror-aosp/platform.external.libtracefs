@@ -6,6 +6,8 @@
 #ifndef _TRACE_FS_LOCAL_H
 #define _TRACE_FS_LOCAL_H
 
+#include <pthread.h>
+
 #define __hidden __attribute__((visibility ("hidden")))
 #define __weak __attribute__((weak))
 
@@ -15,13 +17,25 @@
 #define BUILD_BUG_ON(cond)			\
 	do { if (!(1/!(cond))) { } } while (0)
 
+#define HASH_BITS 10
+
 struct tracefs_options_mask {
 	unsigned long long	mask;
+};
+
+struct follow_event {
+	struct tep_event	*event;
+	void			*callback_data;
+	int (*callback)(struct tep_event *,
+			struct tep_record *,
+			int, void *);
 };
 
 struct tracefs_instance {
 	struct tracefs_options_mask	supported_opts;
 	struct tracefs_options_mask	enabled_opts;
+	struct follow_event		*followers;
+	struct follow_event		*missed_followers;
 	char				*trace_dir;
 	char				*name;
 	pthread_mutex_t			lock;
@@ -31,6 +45,8 @@ struct tracefs_instance {
 	int				ftrace_notrace_fd;
 	int				ftrace_marker_fd;
 	int				ftrace_marker_raw_fd;
+	int				nr_followers;
+	int				nr_missed_followers;
 	bool				pipe_keep_going;
 	bool				iterate_keep_going;
 };
@@ -50,7 +66,7 @@ void tracefs_warning(const char *fmt, ...);
 
 int str_read_file(const char *file, char **buffer, bool warn);
 char *trace_append_file(const char *dir, const char *name);
-char *trace_find_tracing_dir(void);
+char *trace_find_tracing_dir(bool debugfs);
 
 #ifndef ACCESSPERMS
 #define ACCESSPERMS (S_IRWXU|S_IRWXG|S_IRWXO) /* 0777 */
@@ -94,7 +110,7 @@ struct tracefs_synth *synth_init_from(struct tep_handle *tep,
 int synth_add_start_field(struct tracefs_synth *synth,
 			  const char *start_field,
 			  const char *name,
-			  enum tracefs_hist_key_type type);
+			  enum tracefs_hist_key_type type, int cnt);
 
 /* Internal interface for ftrace dynamic events */
 
@@ -119,5 +135,7 @@ int trace_rescan_events(struct tep_handle *tep,
 			const char *tracing_dir, const char *system);
 struct tep_event *get_tep_event(struct tep_handle *tep,
 				const char *system, const char *name);
+
+unsigned int quick_hash(const char *str);
 
 #endif /* _TRACE_FS_LOCAL_H */

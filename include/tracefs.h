@@ -15,6 +15,9 @@ void tracefs_put_tracing_file(char *name);
 
 /* the returned string must *not* be freed */
 const char *tracefs_tracing_dir(void);
+const char *tracefs_debug_dir(void);
+int tracefs_set_tracing_dir(char *tracing_dir);
+int tracefs_tracing_dir_is_mounted(bool mount, const char **path);
 
 /* ftrace instances */
 struct tracefs_instance;
@@ -53,6 +56,8 @@ char *tracefs_instance_get_affinity(struct tracefs_instance *instance);
 char *tracefs_instance_get_affinity_raw(struct tracefs_instance *instance);
 int tracefs_instance_get_affinity_set(struct tracefs_instance *instance,
 				      cpu_set_t *set, size_t set_size);
+ssize_t tracefs_instance_get_buffer_size(struct tracefs_instance *instance, int cpu);
+int tracefs_instance_set_buffer_size(struct tracefs_instance *instance, size_t size, int cpu);
 char **tracefs_instances(const char *regex);
 
 bool tracefs_instance_exists(const char *name);
@@ -65,8 +70,17 @@ int tracefs_trace_off(struct tracefs_instance *instance);
 int tracefs_trace_on_fd(int fd);
 int tracefs_trace_off_fd(int fd);
 
+enum tracefs_enable_state {
+	TRACEFS_ERROR		= -1,
+	TRACEFS_ALL_DISABLED	= 0,
+	TRACEFS_ALL_ENABLED	= 1,
+	TRACEFS_SOME_ENABLED	= 2,
+};
+
 int tracefs_event_enable(struct tracefs_instance *instance, const char *system, const char *event);
 int tracefs_event_disable(struct tracefs_instance *instance, const char *system, const char *event);
+enum tracefs_enable_state tracefs_event_is_enabled(struct tracefs_instance *instance,
+			 const char *system, const char *event);
 
 char *tracefs_error_last(struct tracefs_instance *instance);
 char *tracefs_error_all(struct tracefs_instance *instance);
@@ -75,6 +89,8 @@ int tracefs_error_clear(struct tracefs_instance *instance);
 void tracefs_list_free(char **list);
 char **tracefs_list_add(char **list, const char *string);
 int tracefs_list_size(char **list);
+
+bool tracefs_tracer_available(const char *tracing_dir, const char *tracer);
 
 /**
  * tracefs_trace_on_get_fd - Get a file descriptor of "tracing_on" in given instance
@@ -110,6 +126,17 @@ int tracefs_iterate_raw_events(struct tep_handle *tep,
 						int, void *),
 				void *callback_context);
 void tracefs_iterate_stop(struct tracefs_instance *instance);
+int tracefs_follow_event(struct tep_handle *tep, struct tracefs_instance *instance,
+			  const char *system, const char *event_name,
+			  int (*callback)(struct tep_event *,
+					  struct tep_record *,
+					  int, void *),
+			  void *callback_data);
+int tracefs_follow_missed_events(struct tracefs_instance *instance,
+				 int (*callback)(struct tep_event *,
+						 struct tep_record *,
+						 int, void *),
+				 void *callback_data);
 
 char *tracefs_event_get_file(struct tracefs_instance *instance,
 			     const char *system, const char *event,
@@ -306,6 +333,7 @@ enum tracefs_hist_key_type {
 	TRACEFS_HIST_KEY_EXECNAME,
 	TRACEFS_HIST_KEY_LOG,
 	TRACEFS_HIST_KEY_USECS,
+	TRACEFS_HIST_KEY_BUCKETS,
 	TRACEFS_HIST_KEY_MAX
 };
 
@@ -368,15 +396,27 @@ struct tracefs_hist_axis {
 	enum tracefs_hist_key_type type;
 };
 
+struct tracefs_hist_axis_cnt {
+	const char *key;
+	enum tracefs_hist_key_type type;
+	int cnt;
+};
+
 struct tracefs_hist *
 tracefs_hist_alloc_nd(struct tep_handle *tep,
 		      const char *system, const char *event_name,
 		      struct tracefs_hist_axis *axes);
+struct tracefs_hist *
+tracefs_hist_alloc_nd_cnt(struct tep_handle *tep,
+			  const char *system, const char *event_name,
+			  struct tracefs_hist_axis_cnt *axes);
 const char *tracefs_hist_get_name(struct tracefs_hist *hist);
 const char *tracefs_hist_get_event(struct tracefs_hist *hist);
 const char *tracefs_hist_get_system(struct tracefs_hist *hist);
 int tracefs_hist_add_key(struct tracefs_hist *hist, const char *key,
 			 enum tracefs_hist_key_type type);
+int tracefs_hist_add_key_cnt(struct tracefs_hist *hist, const char *key,
+			 enum tracefs_hist_key_type type, int cnt);
 int tracefs_hist_add_value(struct tracefs_hist *hist, const char *value);
 int tracefs_hist_add_sort_key(struct tracefs_hist *hist,
 			      const char *sort_key);
@@ -577,5 +617,21 @@ struct tracefs_synth *tracefs_sql(struct tep_handle *tep, const char *name,
 				  const char *sql_buffer, char **err);
 struct tep_event *
 tracefs_synth_get_event(struct tep_handle *tep, struct tracefs_synth *synth);
+
+struct tracefs_cpu;
+
+struct tracefs_cpu *tracefs_cpu_alloc_fd(int fd, int subbuf_size, bool nonblock);
+struct tracefs_cpu *tracefs_cpu_open(struct tracefs_instance *instance,
+				     int cpu, bool nonblock);
+void tracefs_cpu_close(struct tracefs_cpu *tcpu);
+void tracefs_cpu_free_fd(struct tracefs_cpu *tcpu);
+int tracefs_cpu_read_size(struct tracefs_cpu *tcpu);
+int tracefs_cpu_read(struct tracefs_cpu *tcpu, void *buffer, bool nonblock);
+int tracefs_cpu_buffered_read(struct tracefs_cpu *tcpu, void *buffer, bool nonblock);
+int tracefs_cpu_write(struct tracefs_cpu *tcpu, int wfd, bool nonblock);
+int tracefs_cpu_stop(struct tracefs_cpu *tcpu);
+int tracefs_cpu_flush(struct tracefs_cpu *tcpu, void *buffer);
+int tracefs_cpu_flush_write(struct tracefs_cpu *tcpu, int wfd);
+int tracefs_cpu_pipe(struct tracefs_cpu *tcpu, int wfd, bool nonblock);
 
 #endif /* _TRACE_FS_H */
