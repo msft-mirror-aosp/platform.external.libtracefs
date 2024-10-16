@@ -654,6 +654,22 @@ tracefs_dynevent_get(enum tracefs_dynevent_type type, const char *system,
 	return devent;
 }
 
+static int destroy_dynevents(struct tracefs_dynevent **all, bool force)
+{
+	int ret = 0;
+	int i;
+
+	if (!all)
+		return 0;
+
+	for (i = 0; all[i]; i++) {
+		if (tracefs_dynevent_destroy(all[i], force))
+			ret = -1;
+	}
+
+	return ret;
+}
+
 /**
  * tracefs_dynevent_destroy_all - removes all dynamic events of given types from the system
  * @types: Dynamic event type, or bitmask of dynamic event types. If 0 is passed, all types
@@ -671,16 +687,32 @@ int tracefs_dynevent_destroy_all(unsigned int types, bool force)
 {
 	struct tracefs_dynevent **all;
 	int ret = 0;
-	int i;
 
+	/*
+	 * Destroy synthetic events first, as they may depend on
+	 * other dynamic events.
+	 */
+	if (types & TRACEFS_DYNEVENT_SYNTH) {
+		all = tracefs_dynevent_get_all(TRACEFS_DYNEVENT_SYNTH, NULL);
+		ret = destroy_dynevents(all, force);
+		tracefs_dynevent_list_free(all);
+		types &= ~TRACEFS_DYNEVENT_SYNTH;
+	}
+
+	/* Eprobes may depend on other events as well */
+	if (types & TRACEFS_DYNEVENT_EPROBE) {
+		all = tracefs_dynevent_get_all(TRACEFS_DYNEVENT_EPROBE, NULL);
+		ret |= destroy_dynevents(all, force);
+		tracefs_dynevent_list_free(all);
+		types &= ~TRACEFS_DYNEVENT_EPROBE;
+	}
+
+	/* Destroy the rest */
 	all = tracefs_dynevent_get_all(types, NULL);
 	if (!all)
 		return 0;
 
-	for (i = 0; all[i]; i++) {
-		if (tracefs_dynevent_destroy(all[i], force))
-			ret = -1;
-	}
+	ret |= destroy_dynevents(all, force);
 
 	tracefs_dynevent_list_free(all);
 
