@@ -1340,6 +1340,17 @@ static void test_cpu_read_buf_percent(struct test_cpu_data *data, int percent)
 
 	/* For percent == 0, just test for any data */
 	if (percent) {
+		int min_percent;
+
+		/*
+		 * For architectures like PowerPC with 64K PAGE_SIZE and thus
+		 * large sub buffers, where we will not have over 100 sub buffers
+		 * percent must at least cover more than 1 sub buffer.
+		 */
+		min_percent = (100 + (data->nr_subbufs - 1)) / data->nr_subbufs;
+		if (percent < min_percent)
+			percent = min_percent;
+
 		expect = data->nr_subbufs * data->events_per_buf * percent / 100;
 
 		/* Add just under the percent */
