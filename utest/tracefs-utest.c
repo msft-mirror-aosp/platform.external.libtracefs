@@ -1270,6 +1270,8 @@ static void test_cpu_read(struct test_cpu_data *data, int expect)
 static void test_instance_trace_cpu_read(struct tracefs_instance *instance, bool map)
 {
 	struct test_cpu_data data;
+	size_t buffer_size;
+	int big_num = 50;
 
 	if (setup_trace_cpu(instance, &data, true, map))
 		return;
@@ -1278,7 +1280,14 @@ static void test_instance_trace_cpu_read(struct tracefs_instance *instance, bool
 	test_cpu_read(&data, data.events_per_buf / 2);
 	test_cpu_read(&data, data.events_per_buf);
 	test_cpu_read(&data, data.events_per_buf + 1);
-	test_cpu_read(&data, data.events_per_buf * 50);
+
+	buffer_size = tracefs_instance_get_buffer_size(instance, 0) * 1024;
+	if (data.events_per_buf * big_num > (buffer_size - data.events_per_buf)) {
+		big_num = (buffer_size / data.events_per_buf);
+		big_num -= data.events_per_buf * 2;
+		CU_TEST(big_num > 0);
+	}
+	test_cpu_read(&data, data.events_per_buf * big_num);
 
 	shutdown_trace_cpu(&data);
 }
