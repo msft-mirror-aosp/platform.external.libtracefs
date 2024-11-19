@@ -306,7 +306,7 @@ static struct dyn_events_desc *get_devent_desc(enum tracefs_dynevent_type type)
 }
 
 /**
- * dynevent_alloc - Allocate new dynamic event
+ * tfs_dynevent_alloc - Allocate new dynamic event
  * @type: Type of the dynamic event
  * @system: The system name (NULL for the default dynamic)
  * @event: Name of the event
@@ -326,8 +326,8 @@ static struct dyn_events_desc *get_devent_desc(enum tracefs_dynevent_type type)
  * errno will be set to EINVAL if event is NULL.
  */
 __hidden struct tracefs_dynevent *
-dynevent_alloc(enum tracefs_dynevent_type type, const char *system,
-	       const char *event, const char *address, const char *format)
+tfs_dynevent_alloc(enum tracefs_dynevent_type type, const char *system,
+		   const char *event, const char *address, const char *format)
 {
 	struct tracefs_dynevent *devent;
 	struct dyn_events_desc *desc;
@@ -720,7 +720,7 @@ int tracefs_dynevent_destroy_all(unsigned int types, bool force)
 }
 
 /**
- * dynevent_get_count - Count dynamic events of given types and system
+ * tfs_dynevent_get_count - Count dynamic events of given types and system
  * @types: Dynamic event type, or bitmask of dynamic event types. If 0 is passed, all types
  *	   are considered.
  * @system: Count events from that system only. If @system is NULL, events from all systems
@@ -728,7 +728,7 @@ int tracefs_dynevent_destroy_all(unsigned int types, bool force)
  *
  * Return the count of requested dynamic events
  */
-__hidden int dynevent_get_count(unsigned int types, const char *system)
+__hidden int tfs_dynevent_get_count(unsigned int types, const char *system)
 {
 	int count, all = 0;
 	int i;
@@ -819,5 +819,5 @@ tracefs_dynevent_get_event(struct tep_handle *tep, struct tracefs_dynevent *dyne
 	if (!tep || !dynevent || !dynevent->event)
 		return NULL;
 
-	return get_tep_event(tep, dynevent->system, dynevent->event);
+	return tfs_get_tep_event(tep, dynevent->system, dynevent->event);
 }

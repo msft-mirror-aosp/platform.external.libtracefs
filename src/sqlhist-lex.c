@@ -509,10 +509,10 @@ static const flex_int16_t yy_chk[234] =
 #include <stdarg.h>
 #include "sqlhist-parse.h"
 
-extern int my_yyinput(void *extra, char *buf, int max);
+extern int tfs_my_yyinput(void *extra, char *buf, int max);
 
 #undef YY_INPUT
-#define YY_INPUT(b, r, m) ({r = my_yyinput(yyextra, b, m);})
+#define YY_INPUT(b, r, m) ({r = tfs_my_yyinput(yyextra, b, m);})
 
 #define YY_NO_INPUT
 #define YY_NO_UNPUT
@@ -899,7 +899,7 @@ YY_RULE_SETUP
 #line 43 "sqlhist.l"
 {
 	HANDLE_COLUMN;
-	yylval->string = store_str(TRACE_SB, yyg->yytext_r);
+	yylval->string = tfs_store_str(TRACE_SB, yyg->yytext_r);
 	return FIELD;
 }
 	YY_BREAK
@@ -909,7 +909,7 @@ YY_RULE_SETUP
 #line 49 "sqlhist.l"
 {
 	HANDLE_COLUMN;
-	yylval->string = store_str(TRACE_SB, yyg->yytext_r);
+	yylval->string = tfs_store_str(TRACE_SB, yyg->yytext_r);
 	return STRING;
 }
 	YY_BREAK
@@ -920,7 +920,7 @@ YY_RULE_SETUP
 	const char *str = yyg->yytext_r;
 	HANDLE_COLUMN;
 	if (str[0] == '\\') { str++; };
-	yylval->string = store_str(TRACE_SB, str);
+	yylval->string = tfs_store_str(TRACE_SB, str);
 	return FIELD;
 }
 	YY_BREAK
@@ -2198,7 +2198,7 @@ void yyerror(struct sqlhist_bison *sb, char *fmt, ...)
 	va_list ap;
 
 	va_start(ap, fmt);
-	sql_parse_error(sb, yytext, fmt, ap);
+	tfs_sql_parse_error(sb, yytext, fmt, ap);
 	va_end(ap);
 }
 

@@ -75,11 +75,11 @@ start :
    select_statement
  ;
 
-label : AS name { CHECK_RETURN_PTR($$ = store_str(sb, $2)); }
- | name { CHECK_RETURN_PTR($$ = store_str(sb, $1)); }
+label : AS name { CHECK_RETURN_PTR($$ = tfs_store_str(sb, $2)); }
+ | name { CHECK_RETURN_PTR($$ = tfs_store_str(sb, $1)); }
  ;
 
-select : SELECT  { table_start(sb); }
+select : SELECT  { tfs_table_start(sb); }
   ;
 
 select_statement :
@@ -94,11 +94,11 @@ selection_list :
 selection :
     selection_expr
 				{
-					CHECK_RETURN_VAL(add_selection(sb, $1, NULL));
+					CHECK_RETURN_VAL(tfs_add_selection(sb, $1, NULL));
 				}
   | selection_expr label
 				{
-					CHECK_RETURN_VAL(add_selection(sb, $1, $2));
+					CHECK_RETURN_VAL(tfs_add_selection(sb, $1, $2));
 				}
   ;
 
@@ -108,7 +108,7 @@ selection_expr :
  | selection_addition
  | '(' selection_addition ')'	{  $$ = $2; }
  | CAST '(' field AS FIELD ')'	{
-					 $$ = add_cast(sb, $3, $5);
+					 $$ = tfs_add_cast(sb, $3, $5);
 					 CHECK_RETURN_PTR($$);
 				}
  ;
@@ -116,12 +116,12 @@ selection_expr :
 selection_addition :
    field '+' field
 				{
-					$$ = add_compare(sb, $1, $3, COMPARE_ADD);
+					$$ = tfs_add_compare(sb, $1, $3, COMPARE_ADD);
 					CHECK_RETURN_PTR($$);
 				}
  | field '-' field
 				{
-					$$ = add_compare(sb, $1, $3, COMPARE_SUB);
+					$$ = tfs_add_compare(sb, $1, $3, COMPARE_SUB);
 					CHECK_RETURN_PTR($$);
 				}
  ;
@@ -132,11 +132,11 @@ item :
  ;
 
 field :
-   FIELD	{ $$ = add_field(sb, $1, NULL); CHECK_RETURN_PTR($$); }
+   FIELD	{ $$ = tfs_add_field(sb, $1, NULL); CHECK_RETURN_PTR($$); }
  ;
 
 named_field :
-   FIELD label { $$ = add_field(sb, $1, $2); CHECK_RETURN_PTR($$); }
+   FIELD label { $$ = tfs_add_field(sb, $1, $2); CHECK_RETURN_PTR($$); }
  ;
 
 name :
@@ -144,46 +144,46 @@ name :
  ;
 
 str_val :
-   STRING	{ $$ = add_string(sb, $1); CHECK_RETURN_PTR($$); }
+   STRING	{ $$ = tfs_add_string(sb, $1); CHECK_RETURN_PTR($$); }
  ;
 
 val :
    str_val
- | NUMBER	{ $$ = add_number(sb, $1); CHECK_RETURN_PTR($$); }
+ | NUMBER	{ $$ = tfs_add_number(sb, $1); CHECK_RETURN_PTR($$); }
  ;
 
 
 compare :
-   field '<' val	{ $$ = add_filter(sb, $1, $3, FILTER_LT); CHECK_RETURN_PTR($$); }
- | field '>' val	{ $$ = add_filter(sb, $1, $3, FILTER_GT); CHECK_RETURN_PTR($$); }
- | field LE val	{ $$ = add_filter(sb, $1, $3, FILTER_LE); CHECK_RETURN_PTR($$); }
- | field GE val	{ $$ = add_filter(sb, $1, $3, FILTER_GE); CHECK_RETURN_PTR($$); }
- | field '=' val	{ $$ = add_filter(sb, $1, $3, FILTER_EQ); CHECK_RETURN_PTR($$); }
- | field EQ val	{ $$ = add_filter(sb, $1, $3, FILTER_EQ); CHECK_RETURN_PTR($$); }
- | field NEQ val	{ $$ = add_filter(sb, $1, $3, FILTER_NE); CHECK_RETURN_PTR($$); }
- | field "!=" val	{ $$ = add_filter(sb, $1, $3, FILTER_NE); CHECK_RETURN_PTR($$); }
- | field '&' val	{ $$ = add_filter(sb, $1, $3, FILTER_BIN_AND); CHECK_RETURN_PTR($$); }
- | field '~' str_val	{ $$ = add_filter(sb, $1, $3, FILTER_STR_CMP); CHECK_RETURN_PTR($$); }
+   field '<' val	{ $$ = tfs_add_filter(sb, $1, $3, FILTER_LT); CHECK_RETURN_PTR($$); }
+ | field '>' val	{ $$ = tfs_add_filter(sb, $1, $3, FILTER_GT); CHECK_RETURN_PTR($$); }
+ | field LE val	{ $$ = tfs_add_filter(sb, $1, $3, FILTER_LE); CHECK_RETURN_PTR($$); }
+ | field GE val	{ $$ = tfs_add_filter(sb, $1, $3, FILTER_GE); CHECK_RETURN_PTR($$); }
+ | field '=' val	{ $$ = tfs_add_filter(sb, $1, $3, FILTER_EQ); CHECK_RETURN_PTR($$); }
+ | field EQ val	{ $$ = tfs_add_filter(sb, $1, $3, FILTER_EQ); CHECK_RETURN_PTR($$); }
+ | field NEQ val	{ $$ = tfs_add_filter(sb, $1, $3, FILTER_NE); CHECK_RETURN_PTR($$); }
+ | field "!=" val	{ $$ = tfs_add_filter(sb, $1, $3, FILTER_NE); CHECK_RETURN_PTR($$); }
+ | field '&' val	{ $$ = tfs_add_filter(sb, $1, $3, FILTER_BIN_AND); CHECK_RETURN_PTR($$); }
+ | field '~' str_val	{ $$ = tfs_add_filter(sb, $1, $3, FILTER_STR_CMP); CHECK_RETURN_PTR($$); }
 ;
 
 compare_and_or :
-   compare_and_or OR compare_and_or	{ $$ = add_filter(sb, $1, $3, FILTER_OR); CHECK_RETURN_PTR($$); }
- | compare_and_or AND compare_and_or	{ $$ = add_filter(sb, $1, $3, FILTER_AND); CHECK_RETURN_PTR($$); }
- | '!' '(' compare_and_or ')'		{ $$ = add_filter(sb, $3, NULL, FILTER_NOT_GROUP); CHECK_RETURN_PTR($$); }
- | '!' compare				{ $$ = add_filter(sb, $2, NULL, FILTER_NOT_GROUP); CHECK_RETURN_PTR($$); }
+   compare_and_or OR compare_and_or	{ $$ = tfs_add_filter(sb, $1, $3, FILTER_OR); CHECK_RETURN_PTR($$); }
+ | compare_and_or AND compare_and_or	{ $$ = tfs_add_filter(sb, $1, $3, FILTER_AND); CHECK_RETURN_PTR($$); }
+ | '!' '(' compare_and_or ')'		{ $$ = tfs_add_filter(sb, $3, NULL, FILTER_NOT_GROUP); CHECK_RETURN_PTR($$); }
+ | '!' compare				{ $$ = tfs_add_filter(sb, $2, NULL, FILTER_NOT_GROUP); CHECK_RETURN_PTR($$); }
  | compare
  ;
 
 compare_items :
-   compare_items OR compare_items	{ $$ = add_filter(sb, $1, $3, FILTER_OR); CHECK_RETURN_PTR($$); }
- | '(' compare_and_or ')'		{ $$ = add_filter(sb, $2, NULL, FILTER_GROUP); CHECK_RETURN_PTR($$); }
- | '!' '(' compare_and_or ')'		{ $$ = add_filter(sb, $3, NULL, FILTER_NOT_GROUP); CHECK_RETURN_PTR($$); }
- | '!' compare				{ $$ = add_filter(sb, $2, NULL, FILTER_NOT_GROUP); CHECK_RETURN_PTR($$); }
+   compare_items OR compare_items	{ $$ = tfs_add_filter(sb, $1, $3, FILTER_OR); CHECK_RETURN_PTR($$); }
+ | '(' compare_and_or ')'		{ $$ = tfs_add_filter(sb, $2, NULL, FILTER_GROUP); CHECK_RETURN_PTR($$); }
+ | '!' '(' compare_and_or ')'		{ $$ = tfs_add_filter(sb, $3, NULL, FILTER_NOT_GROUP); CHECK_RETURN_PTR($$); }
+ | '!' compare				{ $$ = tfs_add_filter(sb, $2, NULL, FILTER_NOT_GROUP); CHECK_RETURN_PTR($$); }
  | compare
  ;
 
 compare_cmds :
-   compare_items		{ CHECK_RETURN_VAL(add_where(sb, $1)); }
+   compare_items		{ CHECK_RETURN_VAL(tfs_add_where(sb, $1)); }
  ;
 
 /*
@@ -216,7 +216,7 @@ table_exp :
  ;
 
 from_clause :
-   FROM item		{ CHECK_RETURN_VAL(add_from(sb, $2)); }
+   FROM item		{ CHECK_RETURN_VAL(tfs_add_from(sb, $2)); }
 
 /*
  * Select from a from clause confuses the variable parsing.
@@ -231,12 +231,12 @@ from_clause :
  ;
 
 join_clause :
- JOIN item ON match_clause	{ add_to(sb, $2); }
+ JOIN item ON match_clause	{ tfs_add_to(sb, $2); }
  ;
 
 match :
-   item '=' item { CHECK_RETURN_VAL(add_match(sb, $1, $3)); }
- | item EQ item { CHECK_RETURN_VAL(add_match(sb, $1, $3)); }
+   item '=' item { CHECK_RETURN_VAL(tfs_add_match(sb, $1, $3)); }
+ | item EQ item { CHECK_RETURN_VAL(tfs_add_match(sb, $1, $3)); }
 
  ;
 

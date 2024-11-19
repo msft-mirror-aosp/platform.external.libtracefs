@@ -29,7 +29,7 @@ uprobe_alloc(enum tracefs_dynevent_type type, const char *system, const char *ev
 	if (asprintf(&target, "%s:0x%0*llx", file, (int)(sizeof(void *) * 2), offset) < 0)
 		return NULL;
 
-	kp = dynevent_alloc(type, system, event, target, fetchargs);
+	kp = tfs_dynevent_alloc(type, system, event, target, fetchargs);
 	free(target);
 
 	return kp;

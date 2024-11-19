@@ -116,7 +116,7 @@ struct sql_table {
 	struct expr		**next_selection;
 };
 
-__hidden int my_yyinput(void *extra, char *buf, int max)
+__hidden int tfs_my_yyinput(void *extra, char *buf, int max)
 {
 	struct sqlhist_bison *sb = extra;
 
@@ -134,8 +134,10 @@ __hidden int my_yyinput(void *extra, char *buf, int max)
 	return max;
 }
 
-__hidden void sql_parse_error(struct sqlhist_bison *sb, const char *text,
-			      const char *fmt, va_list ap)
+__hidden void tfs_sql_parse_error(struct sqlhist_bison *sb,
+				  const char *text,
+				  const char *fmt,
+				  va_list ap)
 {
 	const char *buffer = sb->buffer;
 	struct trace_seq s;
@@ -177,11 +179,11 @@ static void parse_error(struct sqlhist_bison *sb, const char *text,
 	va_list ap;
 
 	va_start(ap, fmt);
-	sql_parse_error(sb, text, fmt, ap);
+	tfs_sql_parse_error(sb, text, fmt, ap);
 	va_end(ap);
 }
 
-__hidden unsigned int quick_hash(const char *str)
+__hidden unsigned int tfs_quick_hash(const char *str)
 {
 	unsigned int val = 0;
 	int len = strlen(str);
@@ -203,7 +205,7 @@ __hidden unsigned int quick_hash(const char *str)
 
 static struct str_hash *find_string(struct sqlhist_bison *sb, const char *str)
 {
-	unsigned int key = quick_hash(str);
+	unsigned int key = tfs_quick_hash(str);
 	struct str_hash *hash = sb->str_hash[key];
 
 	for (; hash; hash = hash->next) {
@@ -215,7 +217,7 @@ static struct str_hash *find_string(struct sqlhist_bison *sb, const char *str)
 
 /*
  * If @str is found, then return the hash string.
- * This lets store_str() know to free str.
+ * This lets tfs_store_str() know to free str.
  */
 static char **add_hash(struct sqlhist_bison *sb, const char *str)
 {
@@ -229,14 +231,14 @@ static char **add_hash(struct sqlhist_bison *sb, const char *str)
 	hash = malloc(sizeof(*hash));
 	if (!hash)
 		return NULL;
-	key = quick_hash(str);
+	key = tfs_quick_hash(str);
 	hash->next = sb->str_hash[key];
 	sb->str_hash[key] = hash;
 	hash->str = NULL;
 	return &hash->str;
 }
 
-__hidden char *store_str(struct sqlhist_bison *sb, const char *str)
+__hidden char *tfs_store_str(struct sqlhist_bison *sb, const char *str)
 {
 	char **pstr = add_hash(sb, str);
 
@@ -249,8 +251,7 @@ __hidden char *store_str(struct sqlhist_bison *sb, const char *str)
 	return *pstr;
 }
 
-__hidden void *add_cast(struct sqlhist_bison *sb,
-			void *data, const char *type)
+__hidden void *tfs_add_cast(struct sqlhist_bison *sb, void *data, const char *type)
 {
 	struct expr *expr = data;
 	struct field *field = &expr->field;
@@ -259,8 +260,7 @@ __hidden void *add_cast(struct sqlhist_bison *sb,
 	return expr;
 }
 
-__hidden int add_selection(struct sqlhist_bison *sb, void *select,
-			   const char *name)
+__hidden int tfs_add_selection(struct sqlhist_bison *sb, void *select, const char *name)
 {
 	struct sql_table *table = sb->table;
 	struct expr *expr = select;
@@ -288,8 +288,7 @@ __hidden int add_selection(struct sqlhist_bison *sb, void *select,
 	return 0;
 }
 
-static struct expr *find_field(struct sqlhist_bison *sb,
-				const char *raw, const char *label)
+static struct expr *find_field(struct sqlhist_bison *sb, const char *raw, const char *label)
 {
 	struct field *field;
 	struct expr *expr;
@@ -375,8 +374,7 @@ static void *create_expr(struct sqlhist_bison *sb,
 #define create_number(var, expr)			\
 	__create_expr(var, long, NUMBER, expr)
 
-__hidden void *add_field(struct sqlhist_bison *sb,
-			 const char *field_name, const char *label)
+__hidden void *tfs_add_field(struct sqlhist_bison *sb, const char *field_name, const char *label)
 {
 	struct sql_table *table = sb->table;
 	struct expr *expr;
@@ -417,7 +415,7 @@ __hidden void *add_field(struct sqlhist_bison *sb,
 			fieldB->raw = field_nameB;
 		}
 
-		return add_compare(sb, exprA, exprB, COMPARE_SUB);
+		return tfs_add_compare(sb, exprA, exprB, COMPARE_SUB);
 	}
 
 	expr = find_field(sb, field_name, label);
@@ -435,8 +433,7 @@ __hidden void *add_field(struct sqlhist_bison *sb,
 	return expr;
 }
 
-__hidden void *add_filter(struct sqlhist_bison *sb,
-			  void *A, void *B, enum filter_type op)
+__hidden void *tfs_add_filter(struct sqlhist_bison *sb, void *A, void *B, enum filter_type op)
 {
 	struct filter *filter;
 	struct expr *expr;
@@ -451,7 +448,7 @@ __hidden void *add_filter(struct sqlhist_bison *sb,
 	return expr;
 }
 
-__hidden int add_match(struct sqlhist_bison *sb, void *A, void *B)
+__hidden int tfs_add_match(struct sqlhist_bison *sb, void *A, void *B)
 {
 	struct sql_table *table = sb->table;
 	struct match *match;
@@ -468,8 +465,8 @@ __hidden int add_match(struct sqlhist_bison *sb, void *A, void *B)
 
 	return 0;
 }
-__hidden void *add_compare(struct sqlhist_bison *sb,
-			   void *A, void *B, enum compare_type type)
+
+__hidden void *tfs_add_compare(struct sqlhist_bison *sb, void *A, void *B, enum compare_type type)
 {
 	struct compare *compare;
 	struct expr *expr;
@@ -484,7 +481,7 @@ __hidden void *add_compare(struct sqlhist_bison *sb,
 	return expr;
 }
 
-__hidden int add_where(struct sqlhist_bison *sb, void *item)
+__hidden int tfs_add_where(struct sqlhist_bison *sb, void *item)
 {
 	struct expr *expr = item;
 	struct sql_table *table = sb->table;
@@ -501,7 +498,7 @@ __hidden int add_where(struct sqlhist_bison *sb, void *item)
 	return 0;
 }
 
-__hidden int add_from(struct sqlhist_bison *sb, void *item)
+__hidden int tfs_add_from(struct sqlhist_bison *sb, void *item)
 {
 	struct expr *expr = item;
 
@@ -513,7 +510,7 @@ __hidden int add_from(struct sqlhist_bison *sb, void *item)
 	return 0;
 }
 
-__hidden int add_to(struct sqlhist_bison *sb, void *item)
+__hidden int tfs_add_to(struct sqlhist_bison *sb, void *item)
 {
 	struct expr *expr = item;
 
@@ -525,7 +522,7 @@ __hidden int add_to(struct sqlhist_bison *sb, void *item)
 	return 0;
 }
 
-__hidden void *add_string(struct sqlhist_bison *sb, const char *str)
+__hidden void *tfs_add_string(struct sqlhist_bison *sb, const char *str)
 {
 	struct expr *expr;
 	const char **str_p;
@@ -535,7 +532,7 @@ __hidden void *add_string(struct sqlhist_bison *sb, const char *str)
 	return expr;
 }
 
-__hidden void *add_number(struct sqlhist_bison *sb, long val)
+__hidden void *tfs_add_number(struct sqlhist_bison *sb, long val)
 {
 	struct expr *expr;
 	long *num;
@@ -545,7 +542,7 @@ __hidden void *add_number(struct sqlhist_bison *sb, long val)
 	return expr;
 }
 
-__hidden int table_start(struct sqlhist_bison *sb)
+__hidden int tfs_table_start(struct sqlhist_bison *sb)
 {
 	struct sql_table *table;
 
@@ -669,7 +666,7 @@ static int update_vars(struct tep_handle *tep,
 		str = strndup(raw, p - raw);
 		if (!str)
 			return -1;
-		event_field->system = store_str(sb, str);
+		event_field->system = tfs_store_str(sb, str);
 		free(str);
 		if (!event_field->system)
 			return -1;
@@ -678,7 +675,7 @@ static int update_vars(struct tep_handle *tep,
 		p = raw;
 	}
 
-	event_field->event_name = store_str(sb, p);
+	event_field->event_name = tfs_store_str(sb, p);
 	if (!event_field->event_name)
 		return -1;
 
@@ -686,7 +683,7 @@ static int update_vars(struct tep_handle *tep,
 		return -1;
 
 	if (!event_field->system)
-		event_field->system = store_str(sb, event->system);
+		event_field->system = tfs_store_str(sb, event->system);
 
 	if (!event_field->system)
 		return -1;
@@ -753,11 +750,11 @@ static int update_vars(struct tep_handle *tep,
 		field->ftype = ftype;
 
 		if (!strcmp(field->field, "TIMESTAMP"))
-			field->field = store_str(sb, TRACEFS_TIMESTAMP);
+			field->field = tfs_store_str(sb, TRACEFS_TIMESTAMP);
 		if (!strcmp(field->field, "TIMESTAMP_USECS"))
-			field->field = store_str(sb, TRACEFS_TIMESTAMP_USECS);
+			field->field = tfs_store_str(sb, TRACEFS_TIMESTAMP_USECS);
 		if (!strcmp(field->field, "STACKTRACE"))
-			field->field = store_str(sb, TRACEFS_STACKTRACE);
+			field->field = tfs_store_str(sb, TRACEFS_STACKTRACE);
 		if (test_field_exists(tep, sb, expr))
 			return -1;
 	}
@@ -809,7 +806,7 @@ static int update_fields(struct tep_handle *tep,
 			p = strndup(field_name, len);
 			if (!p)
 				return -1;
-			field_name = store_str(sb, p);
+			field_name = tfs_store_str(sb, p);
 			free((char *)p);
 			if (!field_name)
 				return -1;
@@ -1485,7 +1482,7 @@ static struct tracefs_synth *build_synth(struct tep_handle *tep,
 		start_system = table->from->field.system;
 		start_event = table->from->field.event_name;
 
-		synth = synth_init_from(tep, start_system, start_event);
+		synth = tfs_synth_init_from(tep, start_system, start_event);
 		if (!synth)
 			return synth_init_error(tep, table);
 		goto hist_only;
@@ -1556,7 +1553,7 @@ static struct tracefs_synth *build_synth(struct tep_handle *tep,
 					goto free;
 				if (type != HIST_COUNTER_TYPE)
 					non_val = true;
-				ret = synth_add_start_field(synth,
+				ret = tfs_synth_add_start_field(synth,
 						field->field, field->label,
 						type, cnt);
 			} else if (table->to) {

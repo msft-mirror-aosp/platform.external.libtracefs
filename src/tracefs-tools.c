@@ -21,7 +21,7 @@
 #include "tracefs.h"
 #include "tracefs-local.h"
 
-__hidden pthread_mutex_t toplevel_lock = PTHREAD_MUTEX_INITIALIZER;
+__hidden pthread_mutex_t tfs_toplevel_lock = PTHREAD_MUTEX_INITIALIZER;
 
 #define TRACE_CTRL		"tracing_on"
 #define TRACE_FILTER		"set_ftrace_filter"
@@ -248,8 +248,8 @@ trace_get_options(struct tracefs_instance *instance, bool enabled)
 	char *path;
 	int ret;
 
-	bitmask = enabled ? enabled_opts_mask(instance) :
-			   supported_opts_mask(instance);
+	bitmask = enabled ? tfs_enabled_opts_mask(instance) :
+			    tfs_supported_opts_mask(instance);
 
 	for (id = 1; id < TRACEFS_OPTION_MAX; id++) {
 		snprintf(file, PATH_MAX, "options/%s", options_map[id]);

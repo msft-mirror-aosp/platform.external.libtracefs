@@ -45,7 +45,7 @@ kprobe_alloc(enum tracefs_dynevent_type type, const char *system, const char *ev
 			*tmp = '\0';
 	}
 
-	kp = dynevent_alloc(type, sys, ename, addr, format);
+	kp = tfs_dynevent_alloc(type, sys, ename, addr, format);
 	if (!event)
 		free((char *)ename);
 

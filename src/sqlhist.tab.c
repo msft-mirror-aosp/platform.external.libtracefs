@@ -1323,26 +1323,26 @@ yyreduce:
     {
   case 3:
 #line 78 "sqlhist.y"
-                { CHECK_RETURN_PTR((yyval.string) = store_str(sb, (yyvsp[0].string))); }
+                { CHECK_RETURN_PTR((yyval.string) = tfs_store_str(sb, (yyvsp[0].string))); }
 #line 1328 "sqlhist.tab.c"
     break;
 
   case 4:
 #line 79 "sqlhist.y"
-        { CHECK_RETURN_PTR((yyval.string) = store_str(sb, (yyvsp[0].string))); }
+        { CHECK_RETURN_PTR((yyval.string) = tfs_store_str(sb, (yyvsp[0].string))); }
 #line 1334 "sqlhist.tab.c"
     break;
 
   case 5:
 #line 82 "sqlhist.y"
-                 { table_start(sb); }
+                 { tfs_table_start(sb); }
 #line 1340 "sqlhist.tab.c"
     break;
 
   case 9:
 #line 96 "sqlhist.y"
                                 {
-					CHECK_RETURN_VAL(add_selection(sb, (yyvsp[0].expr), NULL));
+					CHECK_RETURN_VAL(tfs_add_selection(sb, (yyvsp[0].expr), NULL));
 				}
 #line 1348 "sqlhist.tab.c"
     break;
@@ -1350,7 +1350,7 @@ yyreduce:
   case 10:
 #line 100 "sqlhist.y"
                                 {
-					CHECK_RETURN_VAL(add_selection(sb, (yyvsp[-1].expr), (yyvsp[0].string)));
+					CHECK_RETURN_VAL(tfs_add_selection(sb, (yyvsp[-1].expr), (yyvsp[0].string)));
 				}
 #line 1356 "sqlhist.tab.c"
     break;
@@ -1370,7 +1370,7 @@ yyreduce:
   case 15:
 #line 110 "sqlhist.y"
                                 {
-					 (yyval.expr) = add_cast(sb, (yyvsp[-3].expr), (yyvsp[-1].string));
+					 (yyval.expr) = tfs_add_cast(sb, (yyvsp[-3].expr), (yyvsp[-1].string));
 					 CHECK_RETURN_PTR((yyval.expr));
 				}
 #line 1377 "sqlhist.tab.c"
@@ -1379,7 +1379,7 @@ yyreduce:
   case 16:
 #line 118 "sqlhist.y"
                                 {
-					(yyval.expr) = add_compare(sb, (yyvsp[-2].expr), (yyvsp[0].expr), COMPARE_ADD);
+					(yyval.expr) = tfs_add_compare(sb, (yyvsp[-2].expr), (yyvsp[0].expr), COMPARE_ADD);
 					CHECK_RETURN_PTR((yyval.expr));
 				}
 #line 1386 "sqlhist.tab.c"
@@ -1388,7 +1388,7 @@ yyreduce:
   case 17:
 #line 123 "sqlhist.y"
                                 {
-					(yyval.expr) = add_compare(sb, (yyvsp[-2].expr), (yyvsp[0].expr), COMPARE_SUB);
+					(yyval.expr) = tfs_add_compare(sb, (yyvsp[-2].expr), (yyvsp[0].expr), COMPARE_SUB);
 					CHECK_RETURN_PTR((yyval.expr));
 				}
 #line 1395 "sqlhist.tab.c"
@@ -1396,163 +1396,163 @@ yyreduce:
 
   case 20:
 #line 135 "sqlhist.y"
-                { (yyval.expr) = add_field(sb, (yyvsp[0].string), NULL); CHECK_RETURN_PTR((yyval.expr)); }
+                { (yyval.expr) = tfs_add_field(sb, (yyvsp[0].string), NULL); CHECK_RETURN_PTR((yyval.expr)); }
 #line 1401 "sqlhist.tab.c"
     break;
 
   case 21:
 #line 139 "sqlhist.y"
-               { (yyval.expr) = add_field(sb, (yyvsp[-1].string), (yyvsp[0].string)); CHECK_RETURN_PTR((yyval.expr)); }
+               { (yyval.expr) = tfs_add_field(sb, (yyvsp[-1].string), (yyvsp[0].string)); CHECK_RETURN_PTR((yyval.expr)); }
 #line 1407 "sqlhist.tab.c"
     break;
 
   case 23:
 #line 147 "sqlhist.y"
-                { (yyval.expr) = add_string(sb, (yyvsp[0].string)); CHECK_RETURN_PTR((yyval.expr)); }
+                { (yyval.expr) = tfs_add_string(sb, (yyvsp[0].string)); CHECK_RETURN_PTR((yyval.expr)); }
 #line 1413 "sqlhist.tab.c"
     break;
 
   case 25:
 #line 152 "sqlhist.y"
-                { (yyval.expr) = add_number(sb, (yyvsp[0].number)); CHECK_RETURN_PTR((yyval.expr)); }
+                { (yyval.expr) = tfs_add_number(sb, (yyvsp[0].number)); CHECK_RETURN_PTR((yyval.expr)); }
 #line 1419 "sqlhist.tab.c"
     break;
 
   case 26:
 #line 157 "sqlhist.y"
-                        { (yyval.expr) = add_filter(sb, (yyvsp[-2].expr), (yyvsp[0].expr), FILTER_LT); CHECK_RETURN_PTR((yyval.expr)); }
+                        { (yyval.expr) = tfs_add_filter(sb, (yyvsp[-2].expr), (yyvsp[0].expr), FILTER_LT); CHECK_RETURN_PTR((yyval.expr)); }
 #line 1425 "sqlhist.tab.c"
     break;
 
   case 27:
 #line 158 "sqlhist.y"
-                        { (yyval.expr) = add_filter(sb, (yyvsp[-2].expr), (yyvsp[0].expr), FILTER_GT); CHECK_RETURN_PTR((yyval.expr)); }
+                        { (yyval.expr) = tfs_add_filter(sb, (yyvsp[-2].expr), (yyvsp[0].expr), FILTER_GT); CHECK_RETURN_PTR((yyval.expr)); }
 #line 1431 "sqlhist.tab.c"
     break;
 
   case 28:
 #line 159 "sqlhist.y"
-                { (yyval.expr) = add_filter(sb, (yyvsp[-2].expr), (yyvsp[0].expr), FILTER_LE); CHECK_RETURN_PTR((yyval.expr)); }
+                { (yyval.expr) = tfs_add_filter(sb, (yyvsp[-2].expr), (yyvsp[0].expr), FILTER_LE); CHECK_RETURN_PTR((yyval.expr)); }
 #line 1437 "sqlhist.tab.c"
     break;
 
   case 29:
 #line 160 "sqlhist.y"
-                { (yyval.expr) = add_filter(sb, (yyvsp[-2].expr), (yyvsp[0].expr), FILTER_GE); CHECK_RETURN_PTR((yyval.expr)); }
+                { (yyval.expr) = tfs_add_filter(sb, (yyvsp[-2].expr), (yyvsp[0].expr), FILTER_GE); CHECK_RETURN_PTR((yyval.expr)); }
 #line 1443 "sqlhist.tab.c"
     break;
 
   case 30:
 #line 161 "sqlhist.y"
-                        { (yyval.expr) = add_filter(sb, (yyvsp[-2].expr), (yyvsp[0].expr), FILTER_EQ); CHECK_RETURN_PTR((yyval.expr)); }
+                        { (yyval.expr) = tfs_add_filter(sb, (yyvsp[-2].expr), (yyvsp[0].expr), FILTER_EQ); CHECK_RETURN_PTR((yyval.expr)); }
 #line 1449 "sqlhist.tab.c"
     break;
 
   case 31:
 #line 162 "sqlhist.y"
-                { (yyval.expr) = add_filter(sb, (yyvsp[-2].expr), (yyvsp[0].expr), FILTER_EQ); CHECK_RETURN_PTR((yyval.expr)); }
+                { (yyval.expr) = tfs_add_filter(sb, (yyvsp[-2].expr), (yyvsp[0].expr), FILTER_EQ); CHECK_RETURN_PTR((yyval.expr)); }
 #line 1455 "sqlhist.tab.c"
     break;
 
   case 32:
 #line 163 "sqlhist.y"
-                        { (yyval.expr) = add_filter(sb, (yyvsp[-2].expr), (yyvsp[0].expr), FILTER_NE); CHECK_RETURN_PTR((yyval.expr)); }
+                        { (yyval.expr) = tfs_add_filter(sb, (yyvsp[-2].expr), (yyvsp[0].expr), FILTER_NE); CHECK_RETURN_PTR((yyval.expr)); }
 #line 1461 "sqlhist.tab.c"
     break;
 
   case 33:
 #line 164 "sqlhist.y"
-                        { (yyval.expr) = add_filter(sb, (yyvsp[-2].expr), (yyvsp[0].expr), FILTER_NE); CHECK_RETURN_PTR((yyval.expr)); }
+                        { (yyval.expr) = tfs_add_filter(sb, (yyvsp[-2].expr), (yyvsp[0].expr), FILTER_NE); CHECK_RETURN_PTR((yyval.expr)); }
 #line 1467 "sqlhist.tab.c"
     break;
 
   case 34:
 #line 165 "sqlhist.y"
-                        { (yyval.expr) = add_filter(sb, (yyvsp[-2].expr), (yyvsp[0].expr), FILTER_BIN_AND); CHECK_RETURN_PTR((yyval.expr)); }
+                        { (yyval.expr) = tfs_add_filter(sb, (yyvsp[-2].expr), (yyvsp[0].expr), FILTER_BIN_AND); CHECK_RETURN_PTR((yyval.expr)); }
 #line 1473 "sqlhist.tab.c"
     break;
 
   case 35:
 #line 166 "sqlhist.y"
-                        { (yyval.expr) = add_filter(sb, (yyvsp[-2].expr), (yyvsp[0].expr), FILTER_STR_CMP); CHECK_RETURN_PTR((yyval.expr)); }
+                        { (yyval.expr) = tfs_add_filter(sb, (yyvsp[-2].expr), (yyvsp[0].expr), FILTER_STR_CMP); CHECK_RETURN_PTR((yyval.expr)); }
 #line 1479 "sqlhist.tab.c"
     break;
 
   case 36:
 #line 170 "sqlhist.y"
-                                        { (yyval.expr) = add_filter(sb, (yyvsp[-2].expr), (yyvsp[0].expr), FILTER_OR); CHECK_RETURN_PTR((yyval.expr)); }
+                                        { (yyval.expr) = tfs_add_filter(sb, (yyvsp[-2].expr), (yyvsp[0].expr), FILTER_OR); CHECK_RETURN_PTR((yyval.expr)); }
 #line 1485 "sqlhist.tab.c"
     break;
 
   case 37:
 #line 171 "sqlhist.y"
-                                        { (yyval.expr) = add_filter(sb, (yyvsp[-2].expr), (yyvsp[0].expr), FILTER_AND); CHECK_RETURN_PTR((yyval.expr)); }
+                                        { (yyval.expr) = tfs_add_filter(sb, (yyvsp[-2].expr), (yyvsp[0].expr), FILTER_AND); CHECK_RETURN_PTR((yyval.expr)); }
 #line 1491 "sqlhist.tab.c"
     break;
 
   case 38:
 #line 172 "sqlhist.y"
-                                        { (yyval.expr) = add_filter(sb, (yyvsp[-1].expr), NULL, FILTER_NOT_GROUP); CHECK_RETURN_PTR((yyval.expr)); }
+                                        { (yyval.expr) = tfs_add_filter(sb, (yyvsp[-1].expr), NULL, FILTER_NOT_GROUP); CHECK_RETURN_PTR((yyval.expr)); }
 #line 1497 "sqlhist.tab.c"
     break;
 
   case 39:
 #line 173 "sqlhist.y"
-                                        { (yyval.expr) = add_filter(sb, (yyvsp[0].expr), NULL, FILTER_NOT_GROUP); CHECK_RETURN_PTR((yyval.expr)); }
+                                        { (yyval.expr) = tfs_add_filter(sb, (yyvsp[0].expr), NULL, FILTER_NOT_GROUP); CHECK_RETURN_PTR((yyval.expr)); }
 #line 1503 "sqlhist.tab.c"
     break;
 
   case 41:
 #line 178 "sqlhist.y"
-                                        { (yyval.expr) = add_filter(sb, (yyvsp[-2].expr), (yyvsp[0].expr), FILTER_OR); CHECK_RETURN_PTR((yyval.expr)); }
+                                        { (yyval.expr) = tfs_add_filter(sb, (yyvsp[-2].expr), (yyvsp[0].expr), FILTER_OR); CHECK_RETURN_PTR((yyval.expr)); }
 #line 1509 "sqlhist.tab.c"
     break;
 
   case 42:
 #line 179 "sqlhist.y"
-                                        { (yyval.expr) = add_filter(sb, (yyvsp[-1].expr), NULL, FILTER_GROUP); CHECK_RETURN_PTR((yyval.expr)); }
+                                        { (yyval.expr) = tfs_add_filter(sb, (yyvsp[-1].expr), NULL, FILTER_GROUP); CHECK_RETURN_PTR((yyval.expr)); }
 #line 1515 "sqlhist.tab.c"
     break;
 
   case 43:
 #line 180 "sqlhist.y"
-                                        { (yyval.expr) = add_filter(sb, (yyvsp[-1].expr), NULL, FILTER_NOT_GROUP); CHECK_RETURN_PTR((yyval.expr)); }
+                                        { (yyval.expr) = tfs_add_filter(sb, (yyvsp[-1].expr), NULL, FILTER_NOT_GROUP); CHECK_RETURN_PTR((yyval.expr)); }
 #line 1521 "sqlhist.tab.c"
     break;
 
   case 44:
 #line 181 "sqlhist.y"
-                                        { (yyval.expr) = add_filter(sb, (yyvsp[0].expr), NULL, FILTER_NOT_GROUP); CHECK_RETURN_PTR((yyval.expr)); }
+                                        { (yyval.expr) = tfs_add_filter(sb, (yyvsp[0].expr), NULL, FILTER_NOT_GROUP); CHECK_RETURN_PTR((yyval.expr)); }
 #line 1527 "sqlhist.tab.c"
     break;
 
   case 46:
 #line 186 "sqlhist.y"
-                                { CHECK_RETURN_VAL(add_where(sb, (yyvsp[0].expr))); }
+                                { CHECK_RETURN_VAL(tfs_add_where(sb, (yyvsp[0].expr))); }
 #line 1533 "sqlhist.tab.c"
     break;
 
   case 56:
 #line 219 "sqlhist.y"
-                        { CHECK_RETURN_VAL(add_from(sb, (yyvsp[0].expr))); }
+                        { CHECK_RETURN_VAL(tfs_add_from(sb, (yyvsp[0].expr))); }
 #line 1539 "sqlhist.tab.c"
     break;
 
   case 57:
 #line 234 "sqlhist.y"
-                                { add_to(sb, (yyvsp[-2].expr)); }
+                                { tfs_add_to(sb, (yyvsp[-2].expr)); }
 #line 1545 "sqlhist.tab.c"
     break;
 
   case 58:
 #line 238 "sqlhist.y"
-                 { CHECK_RETURN_VAL(add_match(sb, (yyvsp[-2].expr), (yyvsp[0].expr))); }
+                 { CHECK_RETURN_VAL(tfs_add_match(sb, (yyvsp[-2].expr), (yyvsp[0].expr))); }
 #line 1551 "sqlhist.tab.c"
     break;
 
   case 59:
 #line 239 "sqlhist.y"
-                { CHECK_RETURN_VAL(add_match(sb, (yyvsp[-2].expr), (yyvsp[0].expr))); }
+                { CHECK_RETURN_VAL(tfs_add_match(sb, (yyvsp[-2].expr), (yyvsp[0].expr))); }
 #line 1557 "sqlhist.tab.c"
     break;
 

@@ -703,10 +703,9 @@ int tracefs_hist_append_filter(struct tracefs_hist *hist,
 			       enum tracefs_compare compare,
 			       const char *val)
 {
-	return trace_append_filter(&hist->filter, &hist->filter_state,
-				   &hist->filter_parens,
-				   hist->event,
-				   type, field, compare, val);
+	return tfs_append_filter(&hist->filter, &hist->filter_state,
+				 &hist->filter_parens, hist->event, type,
+				 field, compare, val);
 }
 
 enum action_type {
@@ -870,13 +869,11 @@ static bool verify_event_fields(struct tep_event *start_event,
 	const struct tep_format_field *end_field;
 	int start_flags, end_flags;
 
-	if (!trace_verify_event_field(start_event, start_field_name,
-				      &start_field))
+	if (!tfs_verify_event_field(start_event, start_field_name, &start_field))
 		return false;
 
 	if (end_event) {
-		if (!trace_verify_event_field(end_event, end_field_name,
-					      &end_field))
+		if (!tfs_verify_event_field(end_event, end_field_name, &end_field))
 			return false;
 
 		/* A pointer can still match a long */
@@ -896,7 +893,7 @@ static bool verify_event_fields(struct tep_event *start_event,
 	return true;
 }
 
-__hidden char *append_string(char *str, const char *space, const char *add)
+__hidden char *tfs_append_string(char *str, const char *space, const char *add)
 {
 	char *new;
 	int len;
@@ -934,14 +931,14 @@ static char *add_synth_field(const struct tep_format_field *field,
 	if (field->flags & TEP_FIELD_IS_ARRAY) {
 		str = strdup(field->type);
 		str = strtok(str, "[");
-		str = append_string(str, " ", name);
-		str = append_string(str, NULL, "[");
+		str = tfs_append_string(str, " ", name);
+		str = tfs_append_string(str, NULL, "[");
 
 		if (!(field->flags & TEP_FIELD_IS_DYNAMIC)) {
 			snprintf(size, 64, "%d", field->size);
-			str = append_string(str, NULL, size);
+			str = tfs_append_string(str, NULL, size);
 		}
-		return append_string(str, NULL, "];");
+		return tfs_append_string(str, NULL, "];");
 	}
 
 	/* Synthetic events understand pid_t, gfp_t and bool */
@@ -949,8 +946,8 @@ static char *add_synth_field(const struct tep_format_field *field,
 	    strcmp(field->type, "gfp_t") == 0 ||
 	    strcmp(field->type, "bool") == 0) {
 		str = strdup(field->type);
-		str = append_string(str, " ", name);
-		return append_string(str, NULL, ";");
+		str = tfs_append_string(str, " ", name);
+		return tfs_append_string(str, NULL, ";");
 	}
 
 	sign = field->flags & TEP_FIELD_IS_SIGNED;
@@ -985,12 +982,12 @@ static char *add_synth_field(const struct tep_format_field *field,
 		return NULL;
 	}
 
-	if (field == &common_stacktrace)
+	if (field == &tfs_common_stacktrace)
 		type = field->type;
 
 	str = strdup(type);
-	str = append_string(str, " ", name);
-	return append_string(str, NULL, ";");
+	str = tfs_append_string(str, " ", name);
+	return tfs_append_string(str, NULL, ";");
 }
 
 static int add_var(char ***list, const char *name, const char *var, bool is_var)
@@ -1017,8 +1014,9 @@ static int add_var(char ***list, const char *name, const char *var, bool is_var)
 }
 
 __hidden struct tracefs_synth *
-synth_init_from(struct tep_handle *tep, const char *start_system,
-		const char *start_event_name)
+tfs_synth_init_from(struct tep_handle *tep,
+		    const char *start_system,
+		    const char *start_event_name)
 {
 	struct tep_event *start_event;
 	struct tracefs_synth *synth;
@@ -1056,11 +1054,11 @@ static int alloc_synthetic_event(struct tracefs_synth *synth)
 
 	for (i = 0; synth->synthetic_fields && synth->synthetic_fields[i]; i++) {
 		field = synth->synthetic_fields[i];
-		format = append_string(format, i ? " " : NULL, field);
+		format = tfs_append_string(format, i ? " " : NULL, field);
 	}
 
-	synth->dyn_event = dynevent_alloc(TRACEFS_DYNEVENT_SYNTH, SYNTHETIC_GROUP,
-					  synth->name, NULL, format);
+	synth->dyn_event = tfs_dynevent_alloc(TRACEFS_DYNEVENT_SYNTH, SYNTHETIC_GROUP,
+					      synth->name, NULL, format);
 	free(format);
 
 	return synth->dyn_event ? 0 : -1;
@@ -1150,7 +1148,7 @@ struct tracefs_synth *tracefs_synth_alloc(struct tep_handle *tep,
 		return NULL;
 	}
 
-	synth = synth_init_from(tep, start_system, start_event_name);
+	synth = tfs_synth_init_from(tep, start_system, start_event_name);
 	if (!synth)
 		return NULL;
 
@@ -1201,14 +1199,14 @@ static int add_synth_fields(struct tracefs_synth *synth,
 
 	ret = asprintf(&str, "$%s", var ? : name);
 	if (ret < 0) {
-		trace_list_pop(synth->synthetic_fields);
+		tfs_list_pop(synth->synthetic_fields);
 		return -1;
 	}
 
 	list = tracefs_list_add(synth->synthetic_args, str);
 	free(str);
 	if (!list) {
-		trace_list_pop(synth->synthetic_fields);
+		tfs_list_pop(synth->synthetic_fields);
 		return -1;
 	}
 
@@ -1261,7 +1259,7 @@ int tracefs_synth_add_match_field(struct tracefs_synth *synth,
 
 	list = tracefs_list_add(synth->end_keys, end_match_field);
 	if (!list) {
-		trace_list_pop(synth->start_keys);
+		tfs_list_pop(synth->start_keys);
 		return -1;
 	}
 	synth->end_keys = list;
@@ -1281,8 +1279,8 @@ int tracefs_synth_add_match_field(struct tracefs_synth *synth,
 	return 0;
 
  pop_lists:
-	trace_list_pop(synth->start_keys);
-	trace_list_pop(synth->end_keys);
+	tfs_list_pop(synth->start_keys);
+	tfs_list_pop(synth->end_keys);
 	return -1;
 }
 
@@ -1320,7 +1318,7 @@ static char *new_name(struct tracefs_synth *synth, const char *name)
 
 static struct name_hash *find_name(struct tracefs_synth *synth, const char *name)
 {
-	unsigned int key = quick_hash(name);
+	unsigned int key = tfs_quick_hash(name);
 	struct name_hash *hash = synth->name_hash[key];
 
 	for (; hash; hash = hash->next) {
@@ -1349,7 +1347,7 @@ static const char *hash_name(struct tracefs_synth *synth, const char *name)
 		return name;
 	}
 
-	key = quick_hash(name);
+	key = tfs_quick_hash(name);
 	hash->next = synth->name_hash[key];
 	synth->name_hash[key] = hash;
 
@@ -1464,10 +1462,11 @@ int tracefs_synth_add_compare_field(struct tracefs_synth *synth,
 	return ret ? -1 : 0;
 }
 
-__hidden int synth_add_start_field(struct tracefs_synth *synth,
-				   const char *start_field,
-				   const char *name,
-				   enum tracefs_hist_key_type type, int count)
+__hidden int tfs_synth_add_start_field(struct tracefs_synth *synth,
+				       const char *start_field,
+				       const char *name,
+				       enum tracefs_hist_key_type type,
+				       int count)
 {
 	const struct tep_format_field *field;
 	const char *var;
@@ -1487,7 +1486,7 @@ __hidden int synth_add_start_field(struct tracefs_synth *synth,
 
 	var = hash_name(synth, name);
 
-	if (!trace_verify_event_field(synth->start_event, start_field, &field))
+	if (!tfs_verify_event_field(synth->start_event, start_field, &field))
 		return -1;
 
 	start_arg = new_arg(synth);
@@ -1551,7 +1550,7 @@ int tracefs_synth_add_start_field(struct tracefs_synth *synth,
 				  const char *start_field,
 				  const char *name)
 {
-	return synth_add_start_field(synth, start_field, name, 0, 0);
+	return tfs_synth_add_start_field(synth, start_field, name, 0, 0);
 }
 
 /**
@@ -1593,7 +1592,7 @@ int tracefs_synth_add_end_field(struct tracefs_synth *synth,
 	if (!name)
 		tmp_var = new_arg(synth);
 
-	if (!trace_verify_event_field(synth->end_event, end_field, &field))
+	if (!tfs_verify_event_field(synth->end_event, end_field, &field))
 		goto out;
 
 	ret = add_var(&synth->end_vars, name ? hname : tmp_var, end_field, false);
@@ -1661,10 +1660,9 @@ int tracefs_synth_append_start_filter(struct tracefs_synth *synth,
 				      enum tracefs_compare compare,
 				      const char *val)
 {
-	return trace_append_filter(&synth->start_filter, &synth->start_state,
-				   &synth->start_parens,
-				   synth->start_event,
-				   type, field, compare, val);
+	return tfs_append_filter(&synth->start_filter, &synth->start_state,
+				 &synth->start_parens, synth->start_event,
+				 type, field, compare, val);
 }
 
 /**
@@ -1684,10 +1682,9 @@ int tracefs_synth_append_end_filter(struct tracefs_synth *synth,
 				    enum tracefs_compare compare,
 				    const char *val)
 {
-	return trace_append_filter(&synth->end_filter, &synth->end_state,
-				   &synth->end_parens,
-				   synth->end_event,
-				   type, field, compare, val);
+	return tfs_append_filter(&synth->end_filter, &synth->end_state,
+				 &synth->end_parens, synth->end_event,
+				 type, field, compare, val);
 }
 
 static bool var_match(const char *match, const char *var, int match_len, int len)
@@ -1908,11 +1905,11 @@ int tracefs_synth_save(struct tracefs_synth *synth,
 	for (i = 0; fields[i]; i++) {
 		char *delim = i ? "," : NULL;
 
-		if (!trace_verify_event_field(synth->end_event, fields[i], NULL))
+		if (!tfs_verify_event_field(synth->end_event, fields[i], NULL))
 			goto error;
-		save = append_string(save, delim, fields[i]);
+		save = tfs_append_string(save, delim, fields[i]);
 	}
-	save = append_string(save, NULL, ")");
+	save = tfs_append_string(save, NULL, ")");
 	if (!save)
 		goto error;
 
@@ -1954,20 +1951,20 @@ static char *create_hist(char **keys, char **vars)
 	for (i = 0; keys[i]; i++) {
 		name = keys[i];
 		if (i)
-			hist = append_string(hist, NULL, ",");
-		hist = append_string(hist, NULL, name);
+			hist = tfs_append_string(hist, NULL, ",");
+		hist = tfs_append_string(hist, NULL, name);
 	}
 
 	if (!vars)
 		return hist;
 
-	hist = append_string(hist, NULL, ":");
+	hist = tfs_append_string(hist, NULL, ":");
 
 	for (i = 0; vars[i]; i++) {
 		name = vars[i];
 		if (i)
-			hist = append_string(hist, NULL, ",");
-		hist = append_string(hist, NULL, name);
+			hist = tfs_append_string(hist, NULL, ",");
+		hist = tfs_append_string(hist, NULL, name);
 	}
 
 	return hist;
@@ -1975,11 +1972,11 @@ static char *create_hist(char **keys, char **vars)
 
 static char *create_onmatch(char *hist, struct tracefs_synth *synth)
 {
-	hist = append_string(hist, NULL, ":onmatch(");
-	hist = append_string(hist, NULL, synth->start_event->system);
-	hist = append_string(hist, NULL, ".");
-	hist = append_string(hist, NULL, synth->start_event->name);
-	return append_string(hist, NULL, ")");
+	hist = tfs_append_string(hist, NULL, ":onmatch(");
+	hist = tfs_append_string(hist, NULL, synth->start_event->system);
+	hist = tfs_append_string(hist, NULL, ".");
+	hist = tfs_append_string(hist, NULL, synth->start_event->name);
+	return tfs_append_string(hist, NULL, ")");
 }
 
 static char *create_trace(char *hist, struct tracefs_synth *synth)
@@ -1988,38 +1985,38 @@ static char *create_trace(char *hist, struct tracefs_synth *synth)
 	int i;
 
 	if (synth->new_format) {
-		hist = append_string(hist, NULL, ".trace(");
-		hist = append_string(hist, NULL, synth->name);
-		hist = append_string(hist, NULL, ",");
+		hist = tfs_append_string(hist, NULL, ".trace(");
+		hist = tfs_append_string(hist, NULL, synth->name);
+		hist = tfs_append_string(hist, NULL, ",");
 	} else {
-		hist = append_string(hist, NULL, ".");
-		hist = append_string(hist, NULL, synth->name);
-		hist = append_string(hist, NULL, "(");
+		hist = tfs_append_string(hist, NULL, ".");
+		hist = tfs_append_string(hist, NULL, synth->name);
+		hist = tfs_append_string(hist, NULL, "(");
 	}
 
 	for (i = 0; synth->synthetic_args && synth->synthetic_args[i]; i++) {
 		name = synth->synthetic_args[i];
 
 		if (i)
-			hist = append_string(hist, NULL, ",");
-		hist = append_string(hist, NULL, name);
+			hist = tfs_append_string(hist, NULL, ",");
+		hist = tfs_append_string(hist, NULL, name);
 	}
 
-	return append_string(hist, NULL, ")");
+	return tfs_append_string(hist, NULL, ")");
 }
 
 static char *create_max(char *hist, struct tracefs_synth *synth, char *field)
 {
-	hist = append_string(hist, NULL, ":onmax(");
-	hist = append_string(hist, NULL, field);
-	return append_string(hist, NULL, ")");
+	hist = tfs_append_string(hist, NULL, ":onmax(");
+	hist = tfs_append_string(hist, NULL, field);
+	return tfs_append_string(hist, NULL, ")");
 }
 
 static char *create_change(char *hist, struct tracefs_synth *synth, char *field)
 {
-	hist = append_string(hist, NULL, ":onchange(");
-	hist = append_string(hist, NULL, field);
-	return append_string(hist, NULL, ")");
+	hist = tfs_append_string(hist, NULL, ":onchange(");
+	hist = tfs_append_string(hist, NULL, field);
+	return tfs_append_string(hist, NULL, ")");
 }
 
 static char *create_actions(char *hist, struct tracefs_synth *synth)
@@ -2051,10 +2048,10 @@ static char *create_actions(char *hist, struct tracefs_synth *synth)
 			hist = create_trace(hist, synth);
 			break;
 		case ACTION_SNAPSHOT:
-			hist = append_string(hist, NULL, ".snapshot()");
+			hist = tfs_append_string(hist, NULL, ".snapshot()");
 			break;
 		case ACTION_SAVE:
-			hist = append_string(hist, NULL, action->save);
+			hist = tfs_append_string(hist, NULL, action->save);
 			break;
 		default:
 			continue;
@@ -2139,17 +2136,17 @@ static char *append_filter(char *hist, char *filter, unsigned int parens)
 	if (!filter)
 		return hist;
 
-	hist = append_string(hist, NULL, " if ");
-	hist = append_string(hist, NULL, filter);
+	hist = tfs_append_string(hist, NULL, " if ");
+	hist = tfs_append_string(hist, NULL, filter);
 	for (i = 0; i < parens; i++)
-		hist = append_string(hist, NULL, ")");
+		hist = tfs_append_string(hist, NULL, ")");
 	return hist;
 }
 
 static int verify_state(struct tracefs_synth *synth)
 {
-	if (trace_test_state(synth->start_state) < 0 ||
-	    trace_test_state(synth->end_state) < 0)
+	if (tfs_test_state(synth->start_state) < 0 ||
+	    tfs_test_state(synth->end_state) < 0)
 		return -1;
 	return 0;
 }
@@ -2440,7 +2437,7 @@ int tracefs_synth_echo_cmd(struct trace_seq *seq,
 		new_event = true;
 	}
 
-	path = trace_find_tracing_dir(false);
+	path = tfs_find_tracing_dir(false);
 	if (!path)
 		goto out_free;
 
@@ -2499,5 +2496,5 @@ tracefs_synth_get_event(struct tep_handle *tep, struct tracefs_synth *synth)
 	if (!tep || !synth || !synth->name)
 		return NULL;
 
-	return get_tep_event(tep, SYNTHETIC_GROUP, synth->name);
+	return tfs_get_tep_event(tep, SYNTHETIC_GROUP, synth->name);
 }

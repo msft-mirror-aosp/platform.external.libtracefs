@@ -31,13 +31,13 @@ struct tracefs_options_mask	toplevel_supported_opts;
 struct tracefs_options_mask	toplevel_enabled_opts;
 
 __hidden inline struct tracefs_options_mask *
-supported_opts_mask(struct tracefs_instance *instance)
+tfs_supported_opts_mask(struct tracefs_instance *instance)
 {
 	return instance ? &instance->supported_opts : &toplevel_supported_opts;
 }
 
 __hidden inline struct tracefs_options_mask *
-enabled_opts_mask(struct tracefs_instance *instance)
+tfs_enabled_opts_mask(struct tracefs_instance *instance)
 {
 	return instance ? &instance->enabled_opts : &toplevel_enabled_opts;
 }
@@ -85,7 +85,7 @@ error:
 }
 
 
-__hidden int trace_get_instance(struct tracefs_instance *instance)
+__hidden int tfs_get_instance(struct tracefs_instance *instance)
 {
 	int ret;
 
@@ -100,7 +100,7 @@ __hidden int trace_get_instance(struct tracefs_instance *instance)
 	return ret;
 }
 
-__hidden void trace_put_instance(struct tracefs_instance *instance)
+__hidden void tfs_put_instance(struct tracefs_instance *instance)
 {
 	pthread_mutex_lock(&instance->lock);
 	if (--instance->ref < 0)
@@ -141,7 +141,7 @@ void tracefs_instance_free(struct tracefs_instance *instance)
 	if (!instance)
 		return;
 
-	trace_put_instance(instance);
+	tfs_put_instance(instance);
 }
 
 static mode_t get_trace_file_permissions(char *name)
@@ -337,7 +337,7 @@ char *tracefs_instance_get_dir(struct tracefs_instance *instance)
 	int ret;
 
 	if (!instance) /* Top instance of default system trace directory */
-		return trace_find_tracing_dir(false);
+		return tfs_find_tracing_dir(false);
 
 	if (!instance->name)
 		return strdup(instance->trace_dir);
@@ -621,7 +621,7 @@ char *tracefs_instance_file_read(struct tracefs_instance *instance,
 	if (!path)
 		return NULL;
 
-	size = str_read_file(path, &buf, true);
+	size = tfs_str_read_file(path, &buf, true);
 
 	tracefs_put_tracing_file(path);
 	if (buf && psize)
@@ -789,7 +789,7 @@ int tracefs_instances_walk(int (*callback)(const char *, void *), void *context)
 		if (strcmp(dent->d_name, ".") == 0 ||
 		    strcmp(dent->d_name, "..") == 0)
 			continue;
-		instance = trace_append_file(path, dent->d_name);
+		instance = tfs_append_file(path, dent->d_name);
 		ret = stat(instance, &st);
 		free(instance);
 		if (ret < 0 || !S_ISDIR(st.st_mode))
@@ -870,7 +870,7 @@ char **tracefs_instances(const char *regex)
 	} else {
 		/* No matches should produce an empty list */
 		if (!list.list)
-			list.list = trace_list_create_empty();
+			list.list = tfs_list_create_empty();
 	}
 	return list.list;
 }
@@ -1323,7 +1323,7 @@ static int clear_trigger(const char *file)
 	int len;
 	int ret;
 
-	size = str_read_file(file, &buf, true);
+	size = tfs_str_read_file(file, &buf, true);
 	if (size < 1)
 		return 0;
 
@@ -1348,7 +1348,7 @@ static int clear_trigger(const char *file)
 	 * Some triggers have an order in removing them.
 	 * They will not be removed if done in the wrong order.
 	 */
-	size = str_read_file(file, &buf, true);
+	size = tfs_str_read_file(file, &buf, true);
 	if (size < 1)
 		return 0;
 
@@ -1372,7 +1372,7 @@ static void disable_func_stack_trace_instance(struct tracefs_instance *instance)
 	content = tracefs_instance_file_read(instance, "current_tracer", &size);
 	if (!content)
 		return;
-	cond = strstrip(content);
+	cond = tfs_strstrip(content);
 	if (memcmp(cond, "function", size - (cond - content)) != 0)
 		goto out;
 

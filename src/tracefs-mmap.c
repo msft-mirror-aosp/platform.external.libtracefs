@@ -63,7 +63,7 @@ struct trace_mmap {
 };
 
 /**
- * trace_mmap - try to mmap the ring buffer
+ * tfs_mmap - try to mmap the ring buffer
  * @fd: The file descriptor to the trace_pipe_raw file
  * @kbuf: The kbuffer to load the subbuffer to
  *
@@ -71,7 +71,7 @@ struct trace_mmap {
  * if not, will return NULL, otherwise it returns a descriptor
  * to handle the mapping.
  */
-__hidden void *trace_mmap(int fd, struct kbuffer *kbuf)
+__hidden void *tfs_mmap(int fd, struct kbuffer *kbuf)
 {
 	struct trace_mmap *tmap;
 	int page_size;
@@ -143,7 +143,7 @@ __hidden void *trace_mmap(int fd, struct kbuffer *kbuf)
 	return tmap;
 }
 
-__hidden void trace_unmap(void *mapping)
+__hidden void tfs_unmap(void *mapping)
 {
 	struct trace_mmap *tmap = mapping;
 
@@ -161,7 +161,7 @@ static int get_reader(struct trace_mmap *tmap)
 	return ioctl(tmap->fd, TRACE_MMAP_IOCTL_GET_READER);
 }
 
-__hidden int trace_mmap_load_subbuf(void *mapping, struct kbuffer *kbuf)
+__hidden int tfs_mmap_load_subbuf(void *mapping, struct kbuffer *kbuf)
 {
 	struct trace_mmap *tmap = mapping;
 	void *data;
@@ -222,7 +222,7 @@ __hidden int trace_mmap_load_subbuf(void *mapping, struct kbuffer *kbuf)
 	return 1;
 }
 
-__hidden int trace_mmap_read(void *mapping, void *buffer)
+__hidden int tfs_mmap_read(void *mapping, void *buffer)
 {
 	struct trace_mmap *tmap = mapping;
 	struct kbuffer *kbuf;
@@ -233,7 +233,7 @@ __hidden int trace_mmap_read(void *mapping, void *buffer)
 
 	kbuf = tmap->kbuf;
 
-	ret = trace_mmap_load_subbuf(mapping, kbuf);
+	ret = tfs_mmap_load_subbuf(mapping, kbuf);
 	/* Return for error or no more events */
 	if (ret <= 0)
 		return ret;

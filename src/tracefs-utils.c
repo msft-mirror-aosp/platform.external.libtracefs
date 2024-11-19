@@ -86,7 +86,7 @@ static int mount_debugfs(void)
 }
 
 /* Exported for testing purpose only */
-__hidden char *find_tracing_dir(bool debugfs, bool mount)
+__hidden char *tfs_find_debug_tracing_dir(bool debugfs, bool mount)
 {
 	char *debug_str = NULL;
 	char fspath[PATH_MAX+1];
@@ -175,7 +175,7 @@ int tracefs_tracing_dir_is_mounted(bool mount, const char **path)
 {
 	const char *dir;
 
-	dir = find_tracing_dir(false, false);
+	dir = tfs_find_debug_tracing_dir(false, false);
 	if (dir) {
 		if (path)
 			*path = dir;
@@ -184,7 +184,7 @@ int tracefs_tracing_dir_is_mounted(bool mount, const char **path)
 	if (!mount)
 		return 0;
 
-	dir = find_tracing_dir(false, mount);
+	dir = tfs_find_debug_tracing_dir(false, mount);
 	if (!dir)
 		return -1;
 	if (path)
@@ -193,15 +193,15 @@ int tracefs_tracing_dir_is_mounted(bool mount, const char **path)
 }
 
 /**
- * trace_find_tracing_dir - Find tracing directory
+ * tfs_find_tracing_dir - Find tracing directory
  * @debugfs: Boolean to just return the debugfs directory
  *
  * Returns string containing the full path to the system's tracing directory.
  * The string must be freed by free()
  */
-__hidden char *trace_find_tracing_dir(bool debugfs)
+__hidden char *tfs_find_tracing_dir(bool debugfs)
 {
-	return find_tracing_dir(debugfs, false);
+	return tfs_find_debug_tracing_dir(debugfs, false);
 }
 
 /**
@@ -258,7 +258,7 @@ const char *tracefs_tracing_dir(void)
 		return tracing_dir;
 
 	free(tracing_dir);
-	tracing_dir = find_tracing_dir(false, true);
+	tracing_dir = tfs_find_debug_tracing_dir(false, true);
 	return tracing_dir;
 }
 
@@ -276,7 +276,7 @@ const char *tracefs_debug_dir(void)
 	if (debug_dir && test_dir(debug_dir, "tracing"))
 		return debug_dir;
 
-	debug_dir = find_tracing_dir(true, true);
+	debug_dir = tfs_find_debug_tracing_dir(true, true);
 	return debug_dir;
 }
 
@@ -321,7 +321,7 @@ void tracefs_put_tracing_file(char *name)
 }
 
 /* The function is copied from trace-cmd */
-__hidden char *strstrip(char *str)
+__hidden char *tfs_strstrip(char *str)
 {
 	char *s;
 
@@ -340,7 +340,7 @@ __hidden char *strstrip(char *str)
 	return s;
 }
 
-__hidden int str_read_file(const char *file, char **buffer, bool warn)
+__hidden int tfs_str_read_file(const char *file, char **buffer, bool warn)
 {
 	char stbuf[BUFSIZ];
 	char *buf = NULL;
@@ -401,7 +401,7 @@ char *tracefs_error_all(struct tracefs_instance *instance)
 	path = tracefs_instance_get_file(instance, ERROR_LOG);
 	if (!path)
 		return NULL;
-	size = str_read_file(path, &content, false);
+	size = tfs_str_read_file(path, &content, false);
 	tracefs_put_tracing_file(path);
 
 	if (size <= 0)
@@ -514,7 +514,7 @@ void tracefs_list_free(char **list)
 }
 
 
-__hidden char ** trace_list_create_empty(void)
+__hidden char **tfs_list_create_empty(void)
 {
 	char **list;
 
@@ -575,13 +575,13 @@ char **tracefs_list_add(char **list, const char *string)
 }
 
 /*
- * trace_list_pop - Removes the last string added
+ * tfs_list_pop - Removes the last string added
  * @list: The list to remove the last event from
  *
  * Returns 0 on success, -1 on error.
  * Returns 1 if the list is empty or NULL.
  */
-__hidden int trace_list_pop(char **list)
+__hidden int tfs_list_pop(char **list)
 {
 	unsigned long size;
 

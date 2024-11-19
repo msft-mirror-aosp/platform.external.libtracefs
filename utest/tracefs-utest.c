@@ -1790,7 +1790,7 @@ static void test_follow_events_clear(void)
 	test_instance_follow_events_clear(test_instance);
 }
 
-extern char *find_tracing_dir(bool debugfs, bool mount);
+extern char *tfs_find_debug_tracing_dir(bool debugfs, bool mount);
 static void test_mounting(void)
 {
 	const char *tracing_dir;
@@ -1804,7 +1804,7 @@ static void test_mounting(void)
 
 	/* First, unmount all instances of debugfs */
 	do {
-		dir = find_tracing_dir(true, false);
+		dir = tfs_find_debug_tracing_dir(true, false);
 		if (dir) {
 			ret = umount(dir);
 			CU_TEST(ret == 0);
@@ -1820,7 +1820,7 @@ static void test_mounting(void)
 
 	/* Next, unmount all instances of tracefs */
 	do {
-		dir = find_tracing_dir(false, false);
+		dir = tfs_find_debug_tracing_dir(false, false);
 		if (dir) {
 			ret = umount(dir);
 			CU_TEST(ret == 0);

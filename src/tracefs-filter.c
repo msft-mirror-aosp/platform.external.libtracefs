@@ -41,7 +41,7 @@ static const struct tep_format_field common_comm = {
 	.size			= 16,
 };
 
-const struct tep_format_field common_stacktrace __hidden = {
+const struct tep_format_field tfs_common_stacktrace __hidden = {
 	.type			= "unsigned long[]",
 	.name			= "stacktrace",
 	.size			= 4,
@@ -52,8 +52,9 @@ const struct tep_format_field common_stacktrace __hidden = {
  * This also must be able to accept fields that are OK via the histograms,
  * such as common_timestamp.
  */
-static const struct tep_format_field *get_event_field(struct tep_event *event,
-					 const char *field_name)
+static const struct tep_format_field *
+get_event_field(struct tep_event *event,
+		const char *field_name)
 {
 	const struct tep_format_field *field;
 
@@ -64,7 +65,7 @@ static const struct tep_format_field *get_event_field(struct tep_event *event,
 		return &common_timestamp_usecs;
 
 	if (!strcmp(field_name, TRACEFS_STACKTRACE))
-		return &common_stacktrace;
+		return &tfs_common_stacktrace;
 
 	field = tep_find_any_field(event, field_name);
 	if (!field && (!strcmp(field_name, "COMM") || !strcmp(field_name, "comm")))
@@ -74,9 +75,9 @@ static const struct tep_format_field *get_event_field(struct tep_event *event,
 }
 
 __hidden bool
-trace_verify_event_field(struct tep_event *event,
-			 const char *field_name,
-			 const struct tep_format_field **ptr_field)
+tfs_verify_event_field(struct tep_event *event,
+		       const char *field_name,
+		       const struct tep_format_field **ptr_field)
 {
 	const struct tep_format_field *field;
 
@@ -92,7 +93,7 @@ trace_verify_event_field(struct tep_event *event,
 	return true;
 }
 
-__hidden int trace_test_state(int state)
+__hidden int tfs_test_state(int state)
 {
 	switch (state) {
 	case S_START:
@@ -146,7 +147,7 @@ static int append_filter(char **filter, unsigned int *state,
 		tmp = strdup(*filter);
 		if (!tmp)
 			return -1;
-		tmp = append_string(tmp, NULL, conj);
+		tmp = tfs_append_string(tmp, NULL, conj);
 		if (!tmp)
 			return -1;
 		free(*filter);
@@ -166,7 +167,7 @@ static int append_filter(char **filter, unsigned int *state,
 		}
 		if (*filter) {
 			tmp = strdup(*filter);
-			tmp = append_string(tmp, NULL, "!");
+			tmp = tfs_append_string(tmp, NULL, "!");
 		} else {
 			tmp = strdup("!");
 		}
@@ -189,7 +190,7 @@ static int append_filter(char **filter, unsigned int *state,
 		}
 		if (*filter) {
 			tmp = strdup(*filter);
-			tmp = append_string(tmp, NULL, "(");
+			tmp = tfs_append_string(tmp, NULL, "(");
 		} else {
 			tmp = strdup("(");
 		}
@@ -215,7 +216,7 @@ static int append_filter(char **filter, unsigned int *state,
 		tmp = strdup(*filter);
 		if (!tmp)
 			return -1;
-		tmp = append_string(tmp, NULL, ")");
+		tmp = tfs_append_string(tmp, NULL, ")");
 		if (!tmp)
 			return -1;
 		free(*filter);
@@ -228,7 +229,7 @@ static int append_filter(char **filter, unsigned int *state,
 	if (!field_name || !val)
 		goto inval;
 
-	if (!trace_verify_event_field(event, field_name, &field))
+	if (!tfs_verify_event_field(event, field_name, &field))
 		return -1;
 
 	is_string = field->flags & TEP_FIELD_IS_STRING;
@@ -240,18 +241,18 @@ static int append_filter(char **filter, unsigned int *state,
 		tmp = strdup(*filter);
 		if (!tmp)
 			return -1;
-		tmp = append_string(tmp, NULL, field_name);
+		tmp = tfs_append_string(tmp, NULL, field_name);
 	} else {
 		tmp = strdup(field_name);
 	}
 
 	switch (compare) {
-	case TRACEFS_COMPARE_EQ: tmp = append_string(tmp, NULL, " == "); break;
-	case TRACEFS_COMPARE_NE: tmp = append_string(tmp, NULL, " != "); break;
+	case TRACEFS_COMPARE_EQ: tmp = tfs_append_string(tmp, NULL, " == "); break;
+	case TRACEFS_COMPARE_NE: tmp = tfs_append_string(tmp, NULL, " != "); break;
 	case TRACEFS_COMPARE_RE:
 		if (!is_string)
 			goto free;
-		tmp = append_string(tmp, NULL, "~");
+		tmp = tfs_append_string(tmp, NULL, "~");
 		break;
 	default:
 		if (is_string)
@@ -259,15 +260,15 @@ static int append_filter(char **filter, unsigned int *state,
 	}
 
 	switch (compare) {
-	case TRACEFS_COMPARE_GT: tmp = append_string(tmp, NULL, " > "); break;
-	case TRACEFS_COMPARE_GE: tmp = append_string(tmp, NULL, " >= "); break;
-	case TRACEFS_COMPARE_LT: tmp = append_string(tmp, NULL, " < "); break;
-	case TRACEFS_COMPARE_LE: tmp = append_string(tmp, NULL, " <= "); break;
-	case TRACEFS_COMPARE_AND: tmp = append_string(tmp, NULL, " & "); break;
+	case TRACEFS_COMPARE_GT: tmp = tfs_append_string(tmp, NULL, " > "); break;
+	case TRACEFS_COMPARE_GE: tmp = tfs_append_string(tmp, NULL, " >= "); break;
+	case TRACEFS_COMPARE_LT: tmp = tfs_append_string(tmp, NULL, " < "); break;
+	case TRACEFS_COMPARE_LE: tmp = tfs_append_string(tmp, NULL, " <= "); break;
+	case TRACEFS_COMPARE_AND: tmp = tfs_append_string(tmp, NULL, " & "); break;
 	default: break;
 	}
 
-	tmp = append_string(tmp, NULL, val);
+	tmp = tfs_append_string(tmp, NULL, val);
 
 	if (!tmp)
 		return -1;
@@ -349,13 +350,15 @@ static int count_parens(char *filter, unsigned int *state)
 	return open;
 }
 
-__hidden int trace_append_filter(char **filter, unsigned int *state,
-			 unsigned int *open_parens,
-			 struct tep_event *event,
-			 enum tracefs_filter type,
-			 const char *field_name,
-			 enum tracefs_compare compare,
-			 const char *val)
+__hidden int
+tfs_append_filter(char **filter,
+		  unsigned int *state,
+		  unsigned int *open_parens,
+		  struct tep_event *event,
+		  enum tracefs_filter type,
+		  const char *field_name,
+		  enum tracefs_compare compare,
+		  const char *val)
 {
 	return append_filter(filter, state, open_parens, event, type,
 			     field_name, compare, val);
@@ -485,9 +488,9 @@ static int error_msg(char **err, char *str,
 	ws[i+1] = '\0';
 
 	errmsg = strdup(filter);
-	errmsg = append_string(errmsg, "\n", ws);
-	errmsg = append_string(errmsg, "\n", msg);
-	errmsg = append_string(errmsg, NULL, "\n");
+	errmsg = tfs_append_string(errmsg, "\n", ws);
+	errmsg = tfs_append_string(errmsg, "\n", msg);
+	errmsg = tfs_append_string(errmsg, NULL, "\n");
 
 	*err = errmsg;
 	return -1;

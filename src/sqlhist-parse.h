@@ -51,27 +51,27 @@ enum compare_type {
 	COMPARE_OR,
 };
 
-char * store_str(struct sqlhist_bison *sb, const char *str);
+char *tfs_store_str(struct sqlhist_bison *sb, const char *str);
 
-int table_start(struct sqlhist_bison *sb);
+int tfs_table_start(struct sqlhist_bison *sb);
 
-void *add_field(struct sqlhist_bison *sb, const char *field, const char *label);
+void *tfs_add_field(struct sqlhist_bison *sb, const char *field, const char *label);
 
-void *add_filter(struct sqlhist_bison *sb, void *A, void *B, enum filter_type op);
+void *tfs_add_filter(struct sqlhist_bison *sb, void *A, void *B, enum filter_type op);
 
-int add_match(struct sqlhist_bison *sb, void *A, void *B);
-void *add_compare(struct sqlhist_bison *sb, void *A, void *B, enum compare_type type);
-int add_where(struct sqlhist_bison *sb, void *expr);
+int tfs_add_match(struct sqlhist_bison *sb, void *A, void *B);
+void *tfs_add_compare(struct sqlhist_bison *sb, void *A, void *B, enum compare_type type);
+int tfs_add_where(struct sqlhist_bison *sb, void *expr);
 
-int add_selection(struct sqlhist_bison *sb, void *item, const char *label);
-int add_from(struct sqlhist_bison *sb, void *item);
-int add_to(struct sqlhist_bison *sb, void *item);
-void *add_cast(struct sqlhist_bison *sb, void *field, const char *type);
+int tfs_add_selection(struct sqlhist_bison *sb, void *item, const char *label);
+int tfs_add_from(struct sqlhist_bison *sb, void *item);
+int tfs_add_to(struct sqlhist_bison *sb, void *item);
+void *tfs_add_cast(struct sqlhist_bison *sb, void *field, const char *type);
 
-void *add_string(struct sqlhist_bison *sb, const char *str);
-void *add_number(struct sqlhist_bison *sb, long val);
+void *tfs_add_string(struct sqlhist_bison *sb, const char *str);
+void *tfs_add_number(struct sqlhist_bison *sb, long val);
 
-extern void sql_parse_error(struct sqlhist_bison *sb, const char *text,
-			    const char *fmt, va_list ap);
+extern void tfs_sql_parse_error(struct sqlhist_bison *sb, const char *text,
+				const char *fmt, va_list ap);
 
 #endif

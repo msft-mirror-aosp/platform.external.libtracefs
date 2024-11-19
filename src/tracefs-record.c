@@ -276,7 +276,7 @@ void tracefs_cpu_free_fd(struct tracefs_cpu *tcpu)
 	close_fd(tcpu->splice_pipe[0]);
 	close_fd(tcpu->splice_pipe[1]);
 
-	trace_unmap(tcpu->mapping);
+	tfs_unmap(tcpu->mapping);
 	kbuffer_free(tcpu->kbuf);
 	free(tcpu);
 }
@@ -341,7 +341,7 @@ int tracefs_cpu_map(struct tracefs_cpu *tcpu)
 	if (tcpu->mapping)
 		return 0;
 
-	tcpu->mapping = trace_mmap(tcpu->fd, tcpu->kbuf);
+	tcpu->mapping = tfs_mmap(tcpu->fd, tcpu->kbuf);
 	return tcpu->mapping ? 0 : -1;
 }
 
@@ -350,7 +350,7 @@ void tracefs_cpu_unmap(struct tracefs_cpu *tcpu)
 	if (!tcpu->mapping)
 		return;
 
-	trace_unmap(tcpu->mapping);
+	tfs_unmap(tcpu->mapping);
 }
 
 static void set_nonblock(struct tracefs_cpu *tcpu)
@@ -427,7 +427,7 @@ static int mmap_read(struct tracefs_cpu *tcpu, void *buffer, bool nonblock)
 	void *mapping = tcpu->mapping;
 	int ret;
 
-	ret = trace_mmap_read(mapping, buffer);
+	ret = tfs_mmap_read(mapping, buffer);
 	if (ret <= 0) {
 		if (!ret && nonblock)
 			errno = EAGAIN;
@@ -523,7 +523,7 @@ struct kbuffer *tracefs_cpu_read_buf(struct tracefs_cpu *tcpu, bool nonblock)
 		if (ret <= 0)
 			return NULL;
 
-		ret = trace_mmap_load_subbuf(tcpu->mapping, tcpu->kbuf);
+		ret = tfs_mmap_load_subbuf(tcpu->mapping, tcpu->kbuf);
 		return ret > 0 ? tcpu->kbuf : NULL;
 	}
 
@@ -550,7 +550,7 @@ static int init_splice(struct tracefs_cpu *tcpu)
 	if (ret < 0)
 		return ret;
 
-	if (str_read_file("/proc/sys/fs/pipe-max-size", &buf, false)) {
+	if (tfs_str_read_file("/proc/sys/fs/pipe-max-size", &buf, false)) {
 		int size = atoi(buf);
 		fcntl(tcpu->splice_pipe[0], F_SETPIPE_SZ, &size);
 		free(buf);
@@ -664,7 +664,7 @@ struct kbuffer *tracefs_cpu_buffered_read_buf(struct tracefs_cpu *tcpu, bool non
 		if (ret <= 0)
 			return NULL;
 
-		ret = trace_mmap_load_subbuf(tcpu->mapping, tcpu->kbuf);
+		ret = tfs_mmap_load_subbuf(tcpu->mapping, tcpu->kbuf);
 		return ret > 0 ? tcpu->kbuf : NULL;
 	}
 
@@ -786,7 +786,7 @@ struct kbuffer *tracefs_cpu_flush_buf(struct tracefs_cpu *tcpu)
 	if (tcpu->mapping) {
 		/* Make sure that reading is now non blocking */
 		set_nonblock(tcpu);
-		ret = trace_mmap_load_subbuf(tcpu->mapping, tcpu->kbuf);
+		ret = tfs_mmap_load_subbuf(tcpu->mapping, tcpu->kbuf);
 		return ret > 0 ? tcpu->kbuf : NULL;
 	}
 

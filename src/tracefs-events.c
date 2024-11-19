@@ -603,7 +603,7 @@ static int add_list_string(char ***list, const char *name)
 	return 0;
 }
 
-__hidden char *trace_append_file(const char *dir, const char *name)
+__hidden char *tfs_append_file(const char *dir, const char *name)
 {
 	char *file;
 	int ret;
@@ -819,7 +819,7 @@ char **tracefs_event_systems(const char *tracing_dir)
 	if (!tracing_dir)
 		return NULL;
 
-	events_dir = trace_append_file(tracing_dir, "events");
+	events_dir = tfs_append_file(tracing_dir, "events");
 	if (!events_dir)
 		return NULL;
 
@@ -844,14 +844,14 @@ char **tracefs_event_systems(const char *tracing_dir)
 		    strcmp(name, "..") == 0)
 			continue;
 
-		sys = trace_append_file(events_dir, name);
+		sys = tfs_append_file(events_dir, name);
 		ret = stat(sys, &st);
 		if (ret < 0 || !S_ISDIR(st.st_mode)) {
 			free(sys);
 			continue;
 		}
 
-		enable = trace_append_file(sys, "enable");
+		enable = tfs_append_file(sys, "enable");
 
 		ret = stat(enable, &st);
 		free(enable);
@@ -913,7 +913,7 @@ char **tracefs_system_events(const char *tracing_dir, const char *system)
 		    strcmp(name, "..") == 0)
 			continue;
 
-		event = trace_append_file(system_dir, name);
+		event = tfs_append_file(system_dir, name);
 		ret = stat(event, &st);
 		if (ret < 0 || !S_ISDIR(st.st_mode)) {
 			free(event);
@@ -951,7 +951,7 @@ static char **list_tracers(const char *tracing_dir)
 	if (!tracing_dir)
 		return NULL;
 
-	available_tracers = trace_append_file(tracing_dir, "available_tracers");
+	available_tracers = tfs_append_file(tracing_dir, "available_tracers");
 	if (!available_tracers)
 		return NULL;
 
@@ -959,7 +959,7 @@ static char **list_tracers(const char *tracing_dir)
 	if (ret < 0)
 		goto out_free;
 
-	len = str_read_file(available_tracers, &buf, true);
+	len = tfs_str_read_file(available_tracers, &buf, true);
 	if (len <= 0)
 		goto out_free;
 
@@ -1063,7 +1063,7 @@ static int load_events(struct tep_handle *tep,
 		if (check && tep_find_event_by_name(tep, system, events[i]))
 			goto next_event;
 
-		len = str_read_file(format, &buf, true);
+		len = tfs_str_read_file(format, &buf, true);
 		if (len <= 0)
 			goto next_event;
 
@@ -1079,21 +1079,25 @@ next_event:
 	return failure;
 }
 
-__hidden int trace_rescan_events(struct tep_handle *tep,
-				const char *tracing_dir, const char *system)
+__hidden int tfs_rescan_events(struct tep_handle *tep,
+			       const char *tracing_dir,
+			       const char *system)
 {
 	/* ToDo: add here logic for deleting removed events from tep handle */
 	return load_events(tep, tracing_dir, system, true);
 }
 
-__hidden int trace_load_events(struct tep_handle *tep,
-			       const char *tracing_dir, const char *system)
+__hidden int tfs_load_events(struct tep_handle *tep,
+			     const char *tracing_dir,
+			     const char *system)
 {
 	return load_events(tep, tracing_dir, system, false);
 }
 
-__hidden struct tep_event *get_tep_event(struct tep_handle *tep,
-					 const char *system, const char *name)
+__hidden struct tep_event *
+tfs_get_tep_event(struct tep_handle *tep,
+		  const char *system,
+		  const char *name)
 {
 	struct tep_event *event;
 
@@ -1107,7 +1111,7 @@ __hidden struct tep_event *get_tep_event(struct tep_handle *tep,
 		return event;
 
 	/* Try to load any new events from the given system */
-	if (trace_rescan_events(tep, NULL, system))
+	if (tfs_rescan_events(tep, NULL, system))
 		return NULL;
 
 	return tep_find_event_by_name(tep, system, name);
@@ -1121,13 +1125,13 @@ static int read_header(struct tep_handle *tep, const char *tracing_dir)
 	int len;
 	int ret = -1;
 
-	header = trace_append_file(tracing_dir, "events/header_page");
+	header = tfs_append_file(tracing_dir, "events/header_page");
 
 	ret = stat(header, &st);
 	if (ret < 0)
 		goto out;
 
-	len = str_read_file(header, &buf, true);
+	len = tfs_str_read_file(header, &buf, true);
 	if (len <= 0)
 		goto out;
 
@@ -1155,7 +1159,7 @@ static void load_kallsyms(struct tep_handle *tep)
 {
 	char *buf;
 
-	if (str_read_file("/proc/kallsyms", &buf, false) <= 0)
+	if (tfs_str_read_file("/proc/kallsyms", &buf, false) <= 0)
 		return;
 
 	tep_parse_kallsyms(tep, buf);
@@ -1169,11 +1173,11 @@ static int load_saved_cmdlines(const char *tracing_dir,
 	char *buf;
 	int ret;
 
-	path = trace_append_file(tracing_dir, "saved_cmdlines");
+	path = tfs_append_file(tracing_dir, "saved_cmdlines");
 	if (!path)
 		return -1;
 
-	ret = str_read_file(path, &buf, false);
+	ret = tfs_str_read_file(path, &buf, false);
 	free(path);
 	if (ret <= 0)
 		return -1;
@@ -1191,11 +1195,11 @@ static void load_printk_formats(const char *tracing_dir,
 	char *buf;
 	int ret;
 
-	path = trace_append_file(tracing_dir, "printk_formats");
+	path = tfs_append_file(tracing_dir, "printk_formats");
 	if (!path)
 		return;
 
-	ret = str_read_file(path, &buf, false);
+	ret = tfs_str_read_file(path, &buf, false);
 	free(path);
 	if (ret <= 0)
 		return;
@@ -1289,14 +1293,14 @@ static int fill_local_events_system(const char *tracing_dir,
 	for (i = 0; systems[i]; i++) {
 		if (sys_names && !contains(systems[i], sys_names))
 			continue;
-		ret = trace_load_events(tep, tracing_dir, systems[i]);
+		ret = tfs_load_events(tep, tracing_dir, systems[i]);
 		if (ret && parsing_failures)
 			(*parsing_failures)++;
 	}
 
 	/* Include ftrace, as it is excluded for not having "enable" file */
 	if (!sys_names || contains("ftrace", sys_names))
-		trace_load_events(tep, tracing_dir, "ftrace");
+		tfs_load_events(tep, tracing_dir, "ftrace");
 
 	load_mappings(tracing_dir, tep);
 

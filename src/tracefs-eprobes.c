@@ -48,7 +48,7 @@ tracefs_eprobe_alloc(const char *system, const char *event,
 	if (asprintf(&target, "%s.%s", target_system, target_event) < 0)
 		return NULL;
 
-	kp = dynevent_alloc(TRACEFS_DYNEVENT_EPROBE, system, event, target, fetchargs);
+	kp = tfs_dynevent_alloc(TRACEFS_DYNEVENT_EPROBE, system, event, target, fetchargs);
 	free(target);
 
 	return kp;
