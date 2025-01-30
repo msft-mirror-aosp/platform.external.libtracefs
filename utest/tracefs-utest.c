@@ -3,6 +3,8 @@
  * Copyright (C) 2020, VMware, Tzvetomir Stoyanov <tz.stoyanov@gmail.com>
  *
  */
+#define _LARGEFILE64_SOURCE
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/stat.h>
@@ -11,16 +13,24 @@
 #include <time.h>
 #include <dirent.h>
 #include <ftw.h>
+#include <ctype.h>
 #include <libgen.h>
 #include <kbuffer.h>
 #include <pthread.h>
 
 #include <sys/mount.h>
+#include <sys/syscall.h>
 
 #include <CUnit/CUnit.h>
 #include <CUnit/Basic.h>
 
 #include "tracefs.h"
+
+#define gettid() syscall(__NR_gettid)
+
+#ifndef PATH_MAX
+#define PATH_MAX 1024
+#endif
 
 #define TRACEFS_SUITE		"tracefs library"
 #define TEST_INSTANCE_NAME	"cunit_test_iter"
@@ -33,25 +43,80 @@
 #define TRACE_ON	"tracing_on"
 #define TRACE_CLOCK	"trace_clock"
 
+/* Used to insert sql types and actions, must be big enough to hold them */
+#define SQL_REPLACE	"RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR"
+
 #define SQL_1_EVENT	"wakeup_1"
 #define SQL_1_SQL	"select sched_switch.next_pid as woke_pid, sched_waking.common_pid as waking_pid from sched_waking join sched_switch on sched_switch.next_pid = sched_waking.pid"
+#define SQL_1_MATCH	"echo 's:wakeup_1 pid_t woke_pid; s32 waking_pid;' >> /sys/kernel/tracing/dynamic_events\n" \
+			"echo 'hist:keys=pid:__arg_XXXXXXXX_1=common_pid' >> /sys/kernel/tracing/events/sched/sched_waking/trigger\n" \
+			"echo 'hist:keys=next_pid:__woke_pid_XXXXXXXX_2=next_pid,__waking_pid_XXXXXXXX_3=$__arg_XXXXXXXX_1:" SQL_REPLACE "' >> /sys/kernel/tracing/events/sched/sched_switch/trigger\n"
+#define SQL_1_VAR "$__waking_pid_XXXXXXXX_3"
+#define SQL_1_ONMATCH "onmatch(sched.sched_waking)"
+#define SQL_1_TRACE "trace(wakeup_1,$__woke_pid_XXXXXXXX_2,$__waking_pid_XXXXXXXX_3)"
+#define SQL_1_SAVE { "prev_prio" , "prev_state", NULL }
 
 #define SQL_2_EVENT	"wakeup_2"
 #define SQL_2_SQL	"select woke.next_pid as woke_pid, wake.common_pid as waking_pid from sched_waking as wake join sched_switch as woke on woke.next_pid = wake.pid"
+#define SQL_2_MATCH	"echo 's:wakeup_2 pid_t woke_pid; s32 waking_pid;' >> /sys/kernel/tracing/dynamic_events\n" \
+			"echo 'hist:keys=pid:__arg_XXXXXXXX_1=common_pid' >> /sys/kernel/tracing/events/sched/sched_waking/trigger\n" \
+			"echo 'hist:keys=next_pid:__woke_pid_XXXXXXXX_2=next_pid,__waking_pid_XXXXXXXX_3=$__arg_XXXXXXXX_1:" SQL_REPLACE "' >> /sys/kernel/tracing/events/sched/sched_switch/trigger\n"
+#define SQL_2_MATCH_EVENT "sched.sched_waking"
+#define SQL_2_VAR "$__woke_pid_XXXXXXXX_2"
+#define SQL_2_ONMATCH "onmatch(sched.sched_waking)"
+#define SQL_2_TRACE "trace(wakeup_2,$__woke_pid_XXXXXXXX_2,$__waking_pid_XXXXXXXX_3)"
+#define SQL_2_SAVE { "prev_prio" , "prev_state", NULL }
 
 #define SQL_3_EVENT	"wakeup_lat"
 #define SQL_3_SQL	"select sched_switch.next_prio as prio, end.prev_prio as pprio, (sched.sched_waking.common_timestamp.usecs - end.TIMESTAMP_USECS) as lat from sched_waking as start join sched_switch as end on start.pid = end.next_pid"
+#define SQL_3_MATCH	"echo 's:wakeup_lat s32 prio; s32 pprio; u64 lat;' >> /sys/kernel/tracing/dynamic_events\n" \
+			"echo 'hist:keys=pid:__arg_XXXXXXXX_1=common_timestamp.usecs' >> /sys/kernel/tracing/events/sched/sched_waking/trigger\n" \
+			"echo 'hist:keys=next_pid:__prio_XXXXXXXX_2=next_prio,__pprio_XXXXXXXX_3=prev_prio,__lat_XXXXXXXX_4=common_timestamp.usecs-$__arg_XXXXXXXX_1:" SQL_REPLACE "' >> /sys/kernel/tracing/events/sched/sched_switch/trigger\n"
+#define SQL_3_MATCH_EVENT "sched.sched_waking"
+#define SQL_3_VAR "$__lat_XXXXXXXX_4"
+#define SQL_3_ONMATCH "onmatch(sched.sched_waking)"
+#define SQL_3_TRACE "trace(wakeup_lat,$__prio_XXXXXXXX_2,$__pprio_XXXXXXXX_3,$__lat_XXXXXXXX_4)"
+#define SQL_3_SAVE { "prev_prio" , "prev_state", NULL }
 
 #define SQL_4_EVENT	"wakeup_lat_2"
 #define SQL_4_SQL	"select start.pid, end.next_prio as prio, (end.TIMESTAMP_USECS - start.TIMESTAMP_USECS) as lat from sched_waking as start join sched_switch as end on start.pid = end.next_pid where (start.prio >= 1 && start.prio < 100) || !(start.pid >= 0 && start.pid <= 1) && end.prev_pid != 0"
+#define SQL_4_MATCH	"echo 's:wakeup_lat_2 pid_t pid; s32 prio; u64 lat;' >> /sys/kernel/tracing/dynamic_events\n" \
+			"echo 'hist:keys=pid:__arg_XXXXXXXX_1=pid,__arg_XXXXXXXX_2=common_timestamp.usecs if (prio >= 1&&prio < 100)||!(pid >= 0&&pid <= 1)' >> /sys/kernel/tracing/events/sched/sched_waking/trigger\n" \
+			"echo 'hist:keys=next_pid:__pid_XXXXXXXX_3=$__arg_XXXXXXXX_1,__prio_XXXXXXXX_4=next_prio,__lat_XXXXXXXX_5=common_timestamp.usecs-$__arg_XXXXXXXX_2:" SQL_REPLACE " if prev_pid != 0' >> /sys/kernel/tracing/events/sched/sched_switch/trigger\n"
+#define SQL_4_MATCH_EVENT "sched.sched_waking"
+#define SQL_4_VAR "$__lat_XXXXXXXX_5"
+#define SQL_4_ONMATCH "onmatch(sched.sched_waking)"
+#define SQL_4_TRACE "trace(wakeup_lat_2,$__pid_XXXXXXXX_3,$__prio_XXXXXXXX_4,$__lat_XXXXXXXX_5)"
+#define SQL_4_SAVE { "prev_prio" , "prev_state", NULL }
 
 #define SQL_5_EVENT	"irq_lat"
 #define SQL_5_SQL	"select end.common_pid as pid, (end.common_timestamp.usecs - start.common_timestamp.usecs) as irq_lat from irq_disable as start join irq_enable as end on start.common_pid = end.common_pid, start.parent_offs == end.parent_offs where start.common_pid != 0"
 #define SQL_5_START	"irq_disable"
+#define SQL_5_MATCH	"echo 's:irq_lat s32 pid; u64 irq_lat;' >> /sys/kernel/tracing/dynamic_events\n" \
+			"echo 'hist:keys=common_pid,parent_offs:__arg_XXXXXXXX_1=common_timestamp.usecs if common_pid != 0' >> /sys/kernel/tracing/events/preemptirq/irq_disable/trigger\n" \
+			"echo 'hist:keys=common_pid,parent_offs:__pid_XXXXXXXX_2=common_pid,__irq_lat_XXXXXXXX_3=common_timestamp.usecs-$__arg_XXXXXXXX_1:" SQL_REPLACE "' >> /sys/kernel/tracing/events/preemptirq/irq_enable/trigger\n"
+#define SQL_5_MATCH_EVENT "preemptirq.irq_disable"
+#define SQL_5_VAR "$__irq_lat_XXXXXXXX_3"
+#define SQL_5_ONMATCH "onmatch(preemptirq.irq_disable)"
+#define SQL_5_TRACE "trace(irq_lat,$__pid_XXXXXXXX_2,$__irq_lat_XXXXXXXX_3)"
+#define SQL_5_SAVE { "caller_offs", NULL }
+
+#define SQL_6_EVENT	"wakeup_lat_3"
+#define SQL_6_SQL	"select start.pid, end.next_prio as prio, (end.TIMESTAMP_USECS - start.TIMESTAMP_USECS) as lat from sched_waking as start join sched_switch as end on start.pid = end.next_pid where (start.prio >= 1 && start.prio < 100) || !(start.pid >= 0 && start.pid <= 1) && end.prev_pid != 0"
+#define SQL_6_MATCH	"echo 's:wakeup_lat_3 pid_t pid; s32 prio; u64 lat;' >> /sys/kernel/tracing/dynamic_events\n" \
+			"echo 'hist:keys=pid:__arg_XXXXXXXX_1=pid,__arg_XXXXXXXX_2=common_timestamp.usecs if (prio >= 1&&prio < 100)||!(pid >= 0&&pid <= 1)' >> /sys/kernel/tracing/events/sched/sched_waking/trigger\n" \
+			"echo 'hist:keys=next_pid:__pid_XXXXXXXX_3=$__arg_XXXXXXXX_1,__prio_XXXXXXXX_4=next_prio,__lat_XXXXXXXX_5=common_timestamp.usecs-$__arg_XXXXXXXX_2:" SQL_REPLACE " if prev_pid != 0' >> /sys/kernel/tracing/events/sched/sched_switch/trigger\n"
+#define SQL_6_MATCH_EVENT "sched.sched_waking"
+#define SQL_6_VAR "$__lat_XXXXXXXX_5"
+#define SQL_6_ONMATCH "onmatch(sched.sched_waking)"
+#define SQL_6_TRACE "trace(wakeup_lat_3,$__pid_XXXXXXXX_3,$__prio_XXXXXXXX_4,$__lat_XXXXXXXX_5)"
+#define SQL_6_SAVE { "prev_prio" , "prev_state", NULL }
 
 #define DEBUGFS_DEFAULT_PATH "/sys/kernel/debug"
 #define TRACEFS_DEFAULT_PATH "/sys/kernel/tracing"
 #define TRACEFS_DEFAULT2_PATH "/sys/kernel/debug/tracing"
+
+static pthread_barrier_t trace_barrier;
 
 static struct tracefs_instance *test_instance;
 static struct tep_handle *test_tep;
@@ -62,6 +127,18 @@ struct test_sample {
 static struct test_sample test_array[TEST_ARRAY_SIZE];
 static int test_found;
 static unsigned long long last_ts;
+
+static bool mapping_is_supported;
+
+static void msleep(int ms)
+{
+	struct timespec tspec;
+
+	/* Sleep for 1ms */
+	tspec.tv_sec = 0;
+	tspec.tv_nsec = 1000000 * ms;
+	nanosleep(&tspec, NULL);
+}
 
 static int test_callback(struct tep_event *event, struct tep_record *record,
 			  int cpu, void *context)
@@ -163,7 +240,7 @@ static void test_iter_write(struct tracefs_instance *instance)
 }
 
 
-static void iter_raw_events_on_cpu(struct tracefs_instance *instance, int cpu)
+static void iter_raw_events_on_cpu(struct tracefs_instance *instance, int cpu, bool snapshot)
 {
 	int cpus = sysconf(_SC_NPROCESSORS_CONF);
 	cpu_set_t *cpuset = NULL;
@@ -171,6 +248,9 @@ static void iter_raw_events_on_cpu(struct tracefs_instance *instance, int cpu)
 	int check = 0;
 	int ret;
 	int i;
+
+	if (snapshot)
+		tracefs_instance_clear(instance);
 
 	if (cpu >= 0) {
 		cpuset = CPU_ALLOC(cpus);
@@ -181,8 +261,15 @@ static void iter_raw_events_on_cpu(struct tracefs_instance *instance, int cpu)
 	test_found = 0;
 	last_ts = 0;
 	test_iter_write(instance);
-	ret = tracefs_iterate_raw_events(test_tep, instance, cpuset, cpu_size,
-					 test_callback, &cpu);
+
+	if (snapshot) {
+		tracefs_snapshot_snap(instance);
+		ret = tracefs_iterate_snapshot_events(test_tep, instance, cpuset, cpu_size,
+						      test_callback, &cpu);
+	} else {
+		ret = tracefs_iterate_raw_events(test_tep, instance, cpuset, cpu_size,
+						 test_callback, &cpu);
+	}
 	CU_TEST(ret == 0);
 	if (cpu < 0) {
 		CU_TEST(test_found == TEST_ARRAY_SIZE);
@@ -216,15 +303,34 @@ static void test_instance_iter_raw_events(struct tracefs_instance *instance)
 	ret = tracefs_iterate_raw_events(test_tep, instance, NULL, 0, NULL, NULL);
 	CU_TEST(ret < 0);
 
-	iter_raw_events_on_cpu(instance, -1);
+	iter_raw_events_on_cpu(instance, -1, false);
 	for (i = 0; i < cpus; i++)
-		iter_raw_events_on_cpu(instance, i);
+		iter_raw_events_on_cpu(instance, i, false);
 }
 
 static void test_iter_raw_events(void)
 {
+	test_instance_iter_raw_events(NULL);
 	test_instance_iter_raw_events(test_instance);
 }
+
+static void test_instance_iter_snapshot_events(struct tracefs_instance *instance)
+{
+	int cpus = sysconf(_SC_NPROCESSORS_CONF);
+	int i;
+
+	iter_raw_events_on_cpu(instance, -1, true);
+	for (i = 0; i < cpus; i++)
+		iter_raw_events_on_cpu(instance, i, true);
+	tracefs_snapshot_free(instance);
+}
+
+static void test_iter_snapshot_events(void)
+{
+	test_instance_iter_snapshot_events(NULL);
+	test_instance_iter_snapshot_events(test_instance);
+}
+
 
 #define RAND_STR_SIZE 20
 #define RAND_ASCII "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
@@ -358,64 +464,609 @@ static void test_ftrace_marker(void)
 	test_instance_ftrace_marker(test_instance);
 }
 
-static void test_instance_trace_sql(struct tracefs_instance *instance)
+static void replace_str(char *str, char *rep, char *with, int rep_len, int with_len)
+{
+	char find[rep_len + 1];
+	char *s = str;
+	int delta = rep_len - with_len;
+
+	CU_TEST(delta >= 0);
+	if (delta < 0) {
+		printf("rep_len:%d with_len:%d\n", rep_len, with_len);
+		return;
+	}
+
+	strncpy(find, rep, rep_len + 1);
+	find[rep_len] = '\0';
+
+	while ((s = strstr(s, find))) {
+		strncpy(s, with, with_len);
+		s += with_len;
+		if (delta) {
+			int new_len = strlen(s) - delta;
+			memmove(s, s + delta, new_len);
+			s[new_len] = '\0';
+		}
+	}
+}
+
+enum sql_type {
+	SQL_ONMATCH,
+	SQL_ONMAX,
+	SQL_ONCHANGE,
+};
+
+enum sql_action {
+	SQL_TRACE,
+	SQL_SNAPSHOT,
+	SQL_SAVE,
+	SQL_TRACE_SNAPSHOT,
+};
+
+struct trace_sql_strings {
+	const char		*match;
+	const char		*onmatch;
+	const char		*var;
+	const char		*trace;
+	char			*save[4];
+};
+
+#define SQL_VAR_REPLACE		"_XXXXXXXX_"
+
+static bool test_sql(struct trace_seq *seq, struct trace_sql_strings *strings,
+		     enum sql_type stype, enum sql_action atype)
+{
+	char string[strlen(strings->match) + 256]; /* add a bunch for replacement */
+	char replace[1024];
+	char type[256];
+	char *p, *s, *e, *c = seq->buffer;
+	bool ret;
+
+	strcpy(string, strings->match);
+	s = string;
+
+	switch (stype) {
+	case SQL_ONMATCH:
+		sprintf(type, "%s", strings->onmatch);
+		break;
+	case SQL_ONMAX:
+		sprintf(type, "onmax(%s)", strings->var);
+		break;
+	case SQL_ONCHANGE:
+		sprintf(type, "onchange(%s)", strings->var);
+		break;
+	}
+
+	switch (atype) {
+	case SQL_TRACE:
+		sprintf(replace, "%s.%s", type, strings->trace);
+		break;
+	case SQL_SNAPSHOT:
+		sprintf(replace, "%s.snapshot()", type);
+		break;
+	case SQL_SAVE:
+		sprintf(replace, "%s.save(", type);
+
+		for (int i = 0; strings->save[i]; i++) {
+			if (i)
+				strcat(replace, ",");
+			strcat(replace, strings->save[i]);
+		}
+		strcat(replace, ")");
+		break;
+	case SQL_TRACE_SNAPSHOT:
+		sprintf(replace, "%s.%s:%s.snapshot()", type, strings->trace, type);
+		break;
+	}
+
+	replace_str(string, SQL_REPLACE, replace, strlen(SQL_REPLACE), strlen(replace));
+
+	while ((p = strstr(s, SQL_VAR_REPLACE))) {
+		CU_TEST(ret = strncmp(c, s, p - s) == 0);
+		if (!ret) {
+			printf("\n\t'%*.s'\nDOES NOT MATCH\n\t%*.s\n",
+			       (int)(p - s), c, (int)(p - s), s);
+			return ret;
+		}
+
+		/* Move c passed what was matched */
+		c += p - s;
+
+		/* Set e to the next value */
+		e = c + 1;
+		while (isdigit(*e))
+			e++;
+		/* Skip the next '_' */
+		e++;
+		/* Skip the next numbers */
+		while (isdigit(*e))
+			e++;
+
+		/* Skip the "_XXXXXXXX_" */
+		s = p + strlen(SQL_VAR_REPLACE);
+		/* Skip the next numbers */
+		while (isdigit(*s))
+			s++;
+
+		/* Now replace all of these */
+		replace_str(s, p, c, s - p, e - c);
+
+		c = e;
+	}
+
+	ret = strcmp(s, c) == 0;
+	if (!ret)
+		printf("\n\t'%s'\nDOES NOT MATCH\n\t%s\n", s, c);
+
+	return ret;
+}
+
+static void unhash_var(char *var, const char *hash_var)
+{
+	const char *p = hash_var + strlen(hash_var) - 1;
+	int len;
+
+	/* Skip $__ */
+	hash_var += 3;
+
+	/* Find the _XXXXXXXXX_ */
+	p = strstr(hash_var, SQL_VAR_REPLACE);
+	CU_TEST(p != NULL);
+
+	len = p - hash_var;
+
+	strncpy(var, hash_var, len);
+	var[len] = '\0';
+}
+
+static bool set_sql_type(struct tracefs_synth *synth, struct trace_sql_strings *strings,
+			 enum sql_type stype, enum sql_action atype)
+{
+	enum tracefs_synth_handler handler = 0;
+	char var[256];
+	int ret = 0;
+
+	switch (stype) {
+	case SQL_ONMATCH:
+		break;
+	case SQL_ONMAX:
+		handler = TRACEFS_SYNTH_HANDLE_MAX;
+		break;
+	case SQL_ONCHANGE:
+		handler = TRACEFS_SYNTH_HANDLE_CHANGE;
+		break;
+	}
+
+	unhash_var(var, strings->var);
+
+	switch (atype) {
+	case SQL_TRACE:
+		if (handler)
+			ret = tracefs_synth_trace(synth, handler, var);
+		break;
+	case SQL_SNAPSHOT:
+		ret = tracefs_synth_snapshot(synth, handler, var);
+		break;
+	case SQL_SAVE:
+		ret = tracefs_synth_save(synth, handler, var, strings->save);
+		break;
+	case SQL_TRACE_SNAPSHOT:
+		ret = tracefs_synth_trace(synth, handler, var);
+		ret |= tracefs_synth_snapshot(synth, handler, var);
+		break;
+	}
+
+	return ret == 0;
+}
+
+#define sql_assign_save(str, arr)			\
+	do {						\
+		char *__array__[] = arr;		\
+		int i;					\
+							\
+		for (i = 0; __array__[i]; i++) {	\
+			(str)[i] = __array__[i];	\
+		}					\
+		(str)[i] = NULL;			\
+	} while (0)
+
+static void test_instance_trace_sql(struct tracefs_instance *instance,
+				    enum sql_type stype, enum sql_action atype)
 {
 	struct tracefs_synth *synth;
 	struct trace_seq seq;
 	struct tep_handle *tep;
 	struct tep_event *event;
+	struct trace_sql_strings strings;
 	int ret;
 
-	tep = tracefs_local_events(NULL);
-	CU_TEST(tep != NULL);
+	tep = test_tep;
 
 	trace_seq_init(&seq);
 
+	strings.match = SQL_1_MATCH;
+	strings.var = SQL_1_VAR;
+	strings.onmatch = SQL_1_ONMATCH;
+	strings.trace = SQL_1_TRACE;
+	sql_assign_save(strings.save, SQL_1_SAVE);
+
 	synth = tracefs_sql(tep, SQL_1_EVENT, SQL_1_SQL, NULL);
 	CU_TEST(synth != NULL);
+	CU_TEST(set_sql_type(synth, &strings, stype, atype));
 	ret = tracefs_synth_echo_cmd(&seq, synth);
 	CU_TEST(ret == 0);
+	CU_TEST(test_sql(&seq, &strings, stype, atype));
 	tracefs_synth_free(synth);
 	trace_seq_reset(&seq);
+
+	strings.match = SQL_2_MATCH;
+	strings.var = SQL_2_VAR;
+	strings.onmatch = SQL_2_ONMATCH;
+	strings.trace = SQL_2_TRACE;
+	sql_assign_save(strings.save, SQL_2_SAVE);
 
 	synth = tracefs_sql(tep, SQL_2_EVENT, SQL_2_SQL, NULL);
 	CU_TEST(synth != NULL);
+	CU_TEST(set_sql_type(synth, &strings, stype, atype));
 	ret = tracefs_synth_echo_cmd(&seq, synth);
 	CU_TEST(ret == 0);
+	CU_TEST(test_sql(&seq, &strings, stype, atype));
 	tracefs_synth_free(synth);
 	trace_seq_reset(&seq);
+
+	strings.match = SQL_3_MATCH;
+	strings.var = SQL_3_VAR;
+	strings.onmatch = SQL_3_ONMATCH;
+	strings.trace = SQL_3_TRACE;
+	sql_assign_save(strings.save, SQL_3_SAVE);
 
 	synth = tracefs_sql(tep, SQL_3_EVENT, SQL_3_SQL, NULL);
 	CU_TEST(synth != NULL);
+	CU_TEST(set_sql_type(synth, &strings, stype, atype));
 	ret = tracefs_synth_echo_cmd(&seq, synth);
 	CU_TEST(ret == 0);
+	CU_TEST(test_sql(&seq, &strings, stype, atype));
 	tracefs_synth_free(synth);
 	trace_seq_reset(&seq);
 
+	strings.match = SQL_4_MATCH;
+	strings.var = SQL_4_VAR;
+	strings.onmatch = SQL_4_ONMATCH;
+	strings.trace = SQL_4_TRACE;
+	sql_assign_save(strings.save, SQL_4_SAVE);
+
 	synth = tracefs_sql(tep, SQL_4_EVENT, SQL_4_SQL, NULL);
 	CU_TEST(synth != NULL);
+	CU_TEST(set_sql_type(synth, &strings, stype, atype));
 	ret = tracefs_synth_echo_cmd(&seq, synth);
 	CU_TEST(ret == 0);
+	CU_TEST(test_sql(&seq, &strings, stype, atype));
 	tracefs_synth_free(synth);
 	trace_seq_reset(&seq);
 
 	event = tep_find_event_by_name(tep, NULL, SQL_5_START);
 	if (event) {
+
+		strings.match = SQL_5_MATCH;
+		strings.var = SQL_5_VAR;
+		strings.onmatch = SQL_5_ONMATCH;
+		strings.trace = SQL_5_TRACE;
+		sql_assign_save(strings.save, SQL_5_SAVE);
+
 		synth = tracefs_sql(tep, SQL_5_EVENT, SQL_5_SQL, NULL);
 		CU_TEST(synth != NULL);
+		CU_TEST(set_sql_type(synth, &strings, stype, atype));
 		ret = tracefs_synth_echo_cmd(&seq, synth);
 		CU_TEST(ret == 0);
+		CU_TEST(test_sql(&seq, &strings, stype, atype));
 		tracefs_synth_free(synth);
 		trace_seq_reset(&seq);
 	}
 
-	tep_free(tep);
+	strings.match = SQL_6_MATCH;
+	strings.var = SQL_6_VAR;
+	strings.onmatch = SQL_6_ONMATCH;
+	strings.trace = SQL_6_TRACE;
+	sql_assign_save(strings.save, SQL_6_SAVE);
+
+	synth = tracefs_sql(tep, SQL_6_EVENT, SQL_6_SQL, NULL);
+	CU_TEST(synth != NULL);
+	CU_TEST(set_sql_type(synth, &strings, stype, atype));
+	ret = tracefs_synth_echo_cmd(&seq, synth);
+	CU_TEST(ret == 0);
+	CU_TEST(test_sql(&seq, &strings, stype, atype));
+	tracefs_synth_free(synth);
+	trace_seq_reset(&seq);
+
 	trace_seq_destroy(&seq);
 }
 
 static void test_trace_sql(void)
 {
-	test_instance_trace_sql(test_instance);
+	test_instance_trace_sql(test_instance, SQL_ONMATCH, SQL_TRACE);
+}
+
+static void test_trace_sql_trace_onmax(void)
+{
+	test_instance_trace_sql(test_instance, SQL_ONMAX, SQL_TRACE);
+}
+
+static void test_trace_sql_trace_onchange(void)
+{
+	test_instance_trace_sql(test_instance, SQL_ONCHANGE, SQL_TRACE);
+}
+
+static void test_trace_sql_snapshot_onmax(void)
+{
+	test_instance_trace_sql(test_instance, SQL_ONMAX, SQL_SNAPSHOT);
+}
+
+static void test_trace_sql_snapshot_onchange(void)
+{
+	test_instance_trace_sql(test_instance, SQL_ONCHANGE, SQL_SNAPSHOT);
+}
+
+static void test_trace_sql_save_onmax(void)
+{
+	test_instance_trace_sql(test_instance, SQL_ONMAX, SQL_SAVE);
+}
+
+static void test_trace_sql_save_onchange(void)
+{
+	test_instance_trace_sql(test_instance, SQL_ONCHANGE, SQL_SAVE);
+}
+
+static void test_trace_sql_trace_snapshot_onmax(void)
+{
+	test_instance_trace_sql(test_instance, SQL_ONMAX, SQL_TRACE_SNAPSHOT);
+}
+
+static void test_trace_sql_trace_snapshot_onchange(void)
+{
+	test_instance_trace_sql(test_instance, SQL_ONCHANGE, SQL_TRACE_SNAPSHOT);
+}
+
+
+static void call_getppid(int cnt)
+{
+	int i;
+
+	for (i = 0; i < cnt; i++)
+		getppid();
+}
+
+struct check_data {
+	int	this_pid;
+	int	other_pid;
+	bool	trace_this;
+	bool	trace_other;
+	bool	trace_all;
+	bool	hit;
+	int (*filter_clear)(struct tracefs_instance *instance, bool notrace);
+};
+
+static int check_callback(struct tep_event *event, struct tep_record *record,
+			  int cpu, void *data)
+{
+	struct check_data *cdata = data;
+	int pid;
+
+	cdata->hit = true;
+
+	pid = tep_data_pid(event->tep, record);
+
+	if (pid == cdata->this_pid) {
+		CU_TEST(cdata->trace_this);
+		return cdata->trace_this ? 0 : -1;
+	}
+
+	if (pid == cdata->other_pid) {
+		CU_TEST(cdata->trace_other);
+		return cdata->trace_other ? 0 : -1;
+	}
+
+	CU_TEST(cdata->trace_all);
+	if (!cdata->trace_all) {
+		printf(" (Traced %d but should not have", pid);
+		if (cdata->trace_this)
+			printf(", this_pid:%d", cdata->this_pid);
+		if (cdata->trace_other)
+			printf(", other_pid:%d", cdata->other_pid);
+		printf(") ");
+	}
+
+	return cdata->trace_all ? 0 : -1;
+}
+
+static int check_filtered_pid(struct tep_handle *tep, struct tracefs_instance *instance,
+			      struct check_data *cdata)
+{
+	int ret;
+
+	cdata->hit = false;
+	ret = tracefs_iterate_raw_events(tep, instance, NULL, 0, check_callback, cdata);
+
+	tracefs_instance_clear(instance);
+
+	cdata->filter_clear(instance, false);
+	cdata->filter_clear(instance, true);
+
+	return ret;
+}
+
+struct spin_data {
+	bool	stop;
+	bool	done;
+	int	tid;
+};
+
+static void *trace_spin_thread(void *arg)
+{
+	struct spin_data *data = arg;
+
+	data->tid = gettid();
+	pthread_barrier_wait(&trace_barrier);
+
+	while (!data->done) {
+		pthread_barrier_wait(&trace_barrier);
+		while (!data->stop && !data->done)
+			getppid();
+		pthread_barrier_wait(&trace_barrier);
+	}
+
+	return NULL;
+}
+
+static void run_test(struct tracefs_instance *instance, struct tep_handle *tep,
+		     struct spin_data *data, struct check_data *cdata)
+{
+	tracefs_trace_on(instance);
+
+	/* Run a little */
+	call_getppid(1000);
+
+	/* Start the spinner */
+	data->stop = false;
+	pthread_barrier_wait(&trace_barrier);
+
+	/* Allow the other threads run */
+	msleep(100);
+
+	/* Stop the spinners */
+	data->stop = true;
+	pthread_barrier_wait(&trace_barrier);
+	/* Run a little more  */
+	call_getppid(10);
+	tracefs_trace_off(instance);
+
+	check_filtered_pid(tep, instance, cdata);
+}
+
+
+static void test_instance_pid_filter(struct tracefs_instance *instance,
+				     int (*filter_pid)(struct tracefs_instance *instance,
+						       int pid, bool reset, bool notrace),
+				     int (*filter_clear)(struct tracefs_instance *instance,
+							 bool notrace))
+{
+	struct tep_handle *tep = test_tep;
+	struct check_data cdata;
+	struct spin_data data = { };
+	pthread_t thread1;
+	pthread_t thread2;
+	int this_pid = getpid();
+
+	pthread_barrier_init(&trace_barrier, NULL, 3);
+
+	/* create two spinners, one will be used for tracing */
+	pthread_create(&thread1, NULL, trace_spin_thread, &data);
+	pthread_create(&thread2, NULL, trace_spin_thread, &data);
+
+	pthread_barrier_wait(&trace_barrier);
+
+	cdata.this_pid = this_pid;
+	cdata.other_pid = data.tid;
+	cdata.filter_clear = filter_clear;
+
+	/* Test 1 */
+	cdata.trace_this = true;
+	cdata.trace_other = false;
+	cdata.trace_all = false;
+
+	/* Add the thread, but then reset it out */
+	filter_pid(instance, data.tid, true, false);
+	filter_pid(instance, this_pid, true, false);
+
+	/* Only this thread should be traced */
+	run_test(instance, tep, &data, &cdata);
+	CU_TEST(cdata.hit);
+
+
+	/* Test 2 */
+	cdata.trace_this = true;
+	cdata.trace_other = true;
+	cdata.trace_all = false;
+
+	/* Add the thread, but then reset it out */
+	filter_pid(instance, data.tid, true, false);
+	filter_pid(instance, this_pid, false, false);
+
+	/* Only this thread should be traced */
+	run_test(instance, tep, &data, &cdata);
+	CU_TEST(cdata.hit);
+
+
+	/* Test 3 */
+	cdata.trace_this = false;
+	cdata.trace_other = true;
+	cdata.trace_all = true;
+
+	/* Add the thread, but then reset it out */
+	filter_pid(instance, data.tid, true, true);
+	filter_pid(instance, this_pid, true, true);
+
+	/* Only this thread should be traced */
+	run_test(instance, tep, &data, &cdata);
+	CU_TEST(cdata.hit);
+
+
+	/* Test 4 */
+	cdata.trace_this = false;
+	cdata.trace_other = false;
+	cdata.trace_all = true;
+
+	/* Add the thread, but then reset it out */
+	filter_pid(instance, data.tid, true, true);
+	filter_pid(instance, this_pid, false, true);
+
+	/* Only this thread should be traced */
+	run_test(instance, tep, &data, &cdata);
+	CU_TEST(cdata.hit);
+
+	/* exit out */
+	data.done = true;
+	pthread_barrier_wait(&trace_barrier);
+	pthread_barrier_wait(&trace_barrier);
+
+	pthread_join(thread1, NULL);
+	pthread_join(thread2, NULL);
+}
+
+static void test_function_pid_filter(struct tracefs_instance *instance)
+{
+	tracefs_trace_off(instance);
+	tracefs_instance_clear(instance);
+	tracefs_tracer_set(instance, TRACEFS_TRACER_FUNCTION);
+	test_instance_pid_filter(instance,
+				 tracefs_filter_pid_function,
+				 tracefs_filter_pid_function_clear);
+	tracefs_tracer_clear(instance);
+	tracefs_trace_on(instance);
+}
+
+static void test_trace_function_pid_filter(void)
+{
+	test_function_pid_filter(NULL);
+	test_function_pid_filter(test_instance);
+}
+
+static void test_events_pid_filter(struct tracefs_instance *instance)
+{
+	tracefs_trace_off(instance);
+	tracefs_instance_clear(instance);
+	tracefs_event_enable(instance, "syscalls", NULL);
+	tracefs_event_enable(instance, "raw_syscalls", NULL);
+	test_instance_pid_filter(instance,
+				 tracefs_filter_pid_events,
+				 tracefs_filter_pid_events_clear);
+	tracefs_event_disable(instance, NULL, NULL);
+	tracefs_trace_on(instance);
+}
+
+static void test_trace_events_pid_filter(void)
+{
+	test_events_pid_filter(NULL);
+	test_events_pid_filter(test_instance);
 }
 
 struct test_cpu_data {
@@ -427,6 +1078,7 @@ struct test_cpu_data {
 	void				*buf;
 	int				events_per_buf;
 	int				bufsize;
+	int				nr_subbufs;
 	int				data_size;
 	int				this_pid;
 	int				fd;
@@ -436,7 +1088,6 @@ struct test_cpu_data {
 static void cleanup_trace_cpu(struct test_cpu_data *data)
 {
 	close(data->fd);
-	tep_free(data->tep);
 	tracefs_cpu_close(data->tcpu);
 	free(data->buf);
 	kbuffer_free(data->kbuf);
@@ -445,11 +1096,21 @@ static void cleanup_trace_cpu(struct test_cpu_data *data)
 #define EVENT_SYSTEM "syscalls"
 #define EVENT_NAME  "sys_enter_getppid"
 
-static int setup_trace_cpu(struct tracefs_instance *instance, struct test_cpu_data *data)
+static int make_trace_temp_file(void)
+{
+	char tmpfile[] = "/tmp/utest-libtracefsXXXXXX";
+	int fd;
+
+	fd = mkstemp(tmpfile);
+	unlink(tmpfile);
+	return fd;
+}
+
+static int setup_trace_cpu(struct tracefs_instance *instance, struct test_cpu_data *data, bool nonblock, bool map)
 {
 	struct tep_format_field **fields;
 	struct tep_event *event;
-	char tmpfile[] = "/tmp/utest-libtracefsXXXXXX";
+	ssize_t buffer_size;
 	int max = 0;
 	int ret;
 	int i;
@@ -461,35 +1122,40 @@ static int setup_trace_cpu(struct tracefs_instance *instance, struct test_cpu_da
 
 	data->instance = instance;
 
-	data->fd = mkstemp(tmpfile);
+	data->fd = make_trace_temp_file();
 	CU_TEST(data->fd >= 0);
-	unlink(tmpfile);
 	if (data->fd < 0)
 		return -1;
 
-	data->tep = tracefs_local_events(NULL);
-	CU_TEST(data->tep != NULL);
-	if (!data->tep)
-		goto fail;
+	data->tep = test_tep;
 
-	data->tcpu = tracefs_cpu_open(instance, 0, true);
+	if (map)
+		data->tcpu = tracefs_cpu_open_mapped(instance, 0, nonblock);
+	else
+		data->tcpu = tracefs_cpu_open(instance, 0, nonblock);
+
 	CU_TEST(data->tcpu != NULL);
 	if (!data->tcpu)
 		goto fail;
 
 	data->bufsize = tracefs_cpu_read_size(data->tcpu);
+	CU_TEST(data->bufsize > 0);
+
+	data->data_size = tep_get_sub_buffer_data_size(data->tep);
+	CU_TEST(data->data_size > 0);
+
+	buffer_size = tracefs_instance_get_buffer_size(instance, 0) * 1024;
+	data->nr_subbufs = buffer_size/ data->data_size;
 
 	data->buf = calloc(1, data->bufsize);
 	CU_TEST(data->buf != NULL);
 	if (!data->buf)
 		goto fail;
 
-	data->kbuf = kbuffer_alloc(sizeof(long) == 8, !tep_is_bigendian());
+	data->kbuf = tep_kbuffer(data->tep);
 	CU_TEST(data->kbuf != NULL);
 	if (!data->kbuf)
 		goto fail;
-
-	data->data_size = data->bufsize - kbuffer_start_of_data(data->kbuf);
 
 	tracefs_instance_file_clear(instance, "trace");
 
@@ -513,6 +1179,12 @@ static int setup_trace_cpu(struct tracefs_instance *instance, struct test_cpu_da
 	CU_TEST(max != 0);
 	if (!max)
 		goto fail;
+
+	/* round up to long size alignment */
+	max = ((max + sizeof(long) - 1)) & ~(sizeof(long) - 1);
+
+	/* Add meta header */
+	max += 4;
 
 	data->events_per_buf = data->data_size / max;
 
@@ -545,12 +1217,18 @@ static void shutdown_trace_cpu(struct test_cpu_data *data)
 	cleanup_trace_cpu(data);
 }
 
-static void call_getppid(int cnt)
+static void reset_trace_cpu(struct test_cpu_data *data, bool nonblock, bool map)
 {
-	int i;
+	close(data->fd);
+	tracefs_cpu_close(data->tcpu);
 
-	for (i = 0; i < cnt; i++)
-		getppid();
+	data->fd = make_trace_temp_file();
+	CU_TEST(data->fd >= 0);
+	if (map)
+		data->tcpu = tracefs_cpu_open_mapped(data->instance, 0, nonblock);
+	else
+		data->tcpu = tracefs_cpu_open(data->instance, 0, nonblock);
+	CU_TEST(data->tcpu != NULL);
 }
 
 static void test_cpu_read(struct test_cpu_data *data, int expect)
@@ -589,11 +1267,11 @@ static void test_cpu_read(struct test_cpu_data *data, int expect)
 	CU_TEST(cnt == expect);
 }
 
-static void test_instance_trace_cpu_read(struct tracefs_instance *instance)
+static void test_instance_trace_cpu_read(struct tracefs_instance *instance, bool map)
 {
 	struct test_cpu_data data;
 
-	if (setup_trace_cpu(instance, &data))
+	if (setup_trace_cpu(instance, &data, true, map))
 		return;
 
 	test_cpu_read(&data, 1);
@@ -607,16 +1285,148 @@ static void test_instance_trace_cpu_read(struct tracefs_instance *instance)
 
 static void test_trace_cpu_read(void)
 {
-	test_instance_trace_cpu_read(NULL);
-	test_instance_trace_cpu_read(test_instance);
+	test_instance_trace_cpu_read(NULL, false);
+	if (mapping_is_supported)
+		test_instance_trace_cpu_read(NULL, true);
+
+	test_instance_trace_cpu_read(test_instance, false);
+	if (mapping_is_supported)
+		test_instance_trace_cpu_read(test_instance, true);
+}
+
+static void *trace_cpu_read_thread(void *arg)
+{
+	struct test_cpu_data *data = arg;
+	struct tracefs_cpu *tcpu = data->tcpu;
+	struct kbuffer *kbuf;
+	long ret = 0;
+
+	pthread_barrier_wait(&trace_barrier);
+
+	kbuf = tracefs_cpu_read_buf(tcpu, false);
+	CU_TEST(kbuf != NULL);
+	data->done = true;
+
+	return (void *)ret;
+}
+
+static void test_cpu_read_buf_percent(struct test_cpu_data *data, int percent)
+{
+	char buffer[tracefs_cpu_read_size(data->tcpu)];
+	pthread_t thread;
+	int save_percent;
+	ssize_t expect;
+	int ret;
+
+	tracefs_instance_clear(data->instance);
+
+	save_percent = tracefs_instance_get_buffer_percent(data->instance);
+	CU_TEST(save_percent >= 0);
+
+	ret = tracefs_instance_set_buffer_percent(data->instance, percent);
+	CU_TEST(ret == 0);
+
+	data->done = false;
+
+	pthread_barrier_init(&trace_barrier, NULL, 2);
+
+	pthread_create(&thread, NULL, trace_cpu_read_thread, data);
+
+	pthread_barrier_wait(&trace_barrier);
+
+	msleep(100);
+
+	CU_TEST(data->done == false);
+
+	/* For percent == 0, just test for any data */
+	if (percent) {
+		expect = data->nr_subbufs * data->events_per_buf * percent / 100;
+
+		/* Add just under the percent */
+		expect -= data->events_per_buf;
+		CU_TEST(expect > 0);
+
+		call_getppid(expect);
+
+		msleep(100);
+
+		CU_TEST(data->done == false);
+
+		/* Add just over the percent */
+		expect = data->events_per_buf * 2;
+	} else {
+		expect = data->events_per_buf;
+	}
+
+	call_getppid(expect);
+
+	msleep(100);
+
+	CU_TEST(data->done == true);
+
+	while (tracefs_cpu_flush(data->tcpu, buffer))
+		;
+
+	tracefs_cpu_stop(data->tcpu);
+	pthread_join(thread, NULL);
+
+	ret = tracefs_instance_set_buffer_percent(data->instance, save_percent);
+	CU_TEST(ret == 0);
+}
+
+static void test_instance_trace_cpu_read_buf_percent(struct tracefs_instance *instance, bool map)
+{
+	struct test_cpu_data data;
+
+	if (setup_trace_cpu(instance, &data, false, map))
+		return;
+
+	test_cpu_read_buf_percent(&data, 0);
+
+	reset_trace_cpu(&data, false, map);
+
+	test_cpu_read_buf_percent(&data, 1);
+
+	reset_trace_cpu(&data, false, map);
+
+	test_cpu_read_buf_percent(&data, 50);
+
+	reset_trace_cpu(&data, false, map);
+
+	test_cpu_read_buf_percent(&data, 100);
+
+	shutdown_trace_cpu(&data);
+}
+
+static void test_trace_cpu_read_buf_percent(void)
+{
+	test_instance_trace_cpu_read_buf_percent(NULL, false);
+	if (mapping_is_supported)
+		test_instance_trace_cpu_read_buf_percent(NULL, true);
+	test_instance_trace_cpu_read_buf_percent(test_instance, false);
+	if (mapping_is_supported)
+		test_instance_trace_cpu_read_buf_percent(test_instance, true);
 }
 
 struct follow_data {
 	struct tep_event *sched_switch;
 	struct tep_event *sched_waking;
+	struct tep_event *getppid;
 	struct tep_event *function;
 	int missed;
+	int switch_hit;
+	int waking_hit;
+	int getppid_hit;
+	int missed_hit;
 };
+
+static void clear_hits(struct follow_data *fdata)
+{
+	fdata->switch_hit = 0;
+	fdata->waking_hit = 0;
+	fdata->getppid_hit = 0;
+	fdata->missed_hit = 0;
+}
 
 static int switch_callback(struct tep_event *event, struct tep_record *record,
 			   int cpu, void *data)
@@ -625,6 +1435,7 @@ static int switch_callback(struct tep_event *event, struct tep_record *record,
 
 	CU_TEST(cpu == record->cpu);
 	CU_TEST(event->id == fdata->sched_switch->id);
+	fdata->switch_hit++;
 	return 0;
 }
 
@@ -635,6 +1446,18 @@ static int waking_callback(struct tep_event *event, struct tep_record *record,
 
 	CU_TEST(cpu == record->cpu);
 	CU_TEST(event->id == fdata->sched_waking->id);
+	fdata->waking_hit++;
+	return 0;
+}
+
+static int getppid_callback(struct tep_event *event, struct tep_record *record,
+			    int cpu, void *data)
+{
+	struct follow_data *fdata = data;
+
+	CU_TEST(cpu == record->cpu);
+	CU_TEST(event->id == fdata->getppid->id);
+	fdata->getppid_hit++;
 	return 0;
 }
 
@@ -654,6 +1477,7 @@ static int missed_callback(struct tep_event *event, struct tep_record *record,
 	struct follow_data *fdata = data;
 
 	fdata->missed = record->missed_events;
+	fdata->missed_hit++;
 	return 0;
 }
 
@@ -685,10 +1509,7 @@ static void test_instance_follow_events(struct tracefs_instance *instance)
 
 	memset(&fdata, 0, sizeof(fdata));
 
-	tep = tracefs_local_events(NULL);
-	CU_TEST(tep != NULL);
-	if (!tep)
-		return;
+	tep = test_tep;
 
 	fdata.sched_switch = tep_find_event_by_name(tep, "sched", "sched_switch");
 	CU_TEST(fdata.sched_switch != NULL);
@@ -734,6 +1555,11 @@ static void test_instance_follow_events(struct tracefs_instance *instance)
 	ret = tracefs_iterate_raw_events(tep, instance, NULL, 0, all_callback, &fdata);
 	CU_TEST(ret == 0);
 
+	ret = tracefs_follow_event_clear(instance, NULL, NULL);
+	CU_TEST(ret == 0);
+	ret = tracefs_follow_missed_events_clear(instance);
+	CU_TEST(ret == 0);
+
 	pthread_join(thread, NULL);
 
 	tracefs_tracer_clear(instance);
@@ -744,6 +1570,204 @@ static void test_follow_events(void)
 {
 	test_instance_follow_events(NULL);
 	test_instance_follow_events(test_instance);
+}
+
+static void test_instance_follow_events_clear(struct tracefs_instance *instance)
+{
+	struct follow_data fdata;
+	struct tep_handle *tep;
+	unsigned long page_size;
+	size_t save_size;
+	char **list;
+	int ret;
+
+	memset(&fdata, 0, sizeof(fdata));
+
+	tep = test_tep;
+
+	fdata.sched_switch = tep_find_event_by_name(tep, "sched", "sched_switch");
+	CU_TEST(fdata.sched_switch != NULL);
+	if (!fdata.sched_switch)
+		return;
+
+	fdata.sched_waking = tep_find_event_by_name(tep, "sched", "sched_waking");
+	CU_TEST(fdata.sched_waking != NULL);
+	if (!fdata.sched_waking)
+		return;
+
+	fdata.getppid = tep_find_event_by_name(tep, EVENT_SYSTEM, EVENT_NAME);
+	CU_TEST(fdata.getppid != NULL);
+	if (!fdata.getppid)
+		return;
+
+	ret = tracefs_follow_event(tep, instance, "sched", "sched_switch",
+				   switch_callback, &fdata);
+	CU_TEST(ret == 0);
+
+	ret = tracefs_follow_event(tep, instance, "sched", "sched_waking",
+				   waking_callback, &fdata);
+	CU_TEST(ret == 0);
+
+	ret = tracefs_follow_event(tep, instance, EVENT_SYSTEM, EVENT_NAME,
+				   getppid_callback, &fdata);
+	CU_TEST(ret == 0);
+
+	ret = tracefs_follow_missed_events(instance, missed_callback, &fdata);
+	CU_TEST(ret == 0);
+
+	ret = tracefs_event_enable(instance, "sched", "sched_switch");
+	CU_TEST(ret == 0);
+
+	ret = tracefs_event_enable(instance, "sched", "sched_waking");
+	CU_TEST(ret == 0);
+
+	ret = tracefs_event_enable(instance, EVENT_SYSTEM, EVENT_NAME);
+	CU_TEST(ret == 0);
+
+	tracefs_trace_on(instance);
+	call_getppid(100);
+	msleep(100);
+	tracefs_trace_off(instance);
+
+	ret = tracefs_iterate_raw_events(tep, instance, NULL, 0, NULL, &fdata);
+	CU_TEST(ret == 0);
+
+	/* Make sure all are hit */
+	CU_TEST(fdata.switch_hit > 0);
+	CU_TEST(fdata.waking_hit > 0);
+	CU_TEST(fdata.getppid_hit == 100);
+	/* No missed events */
+	CU_TEST(fdata.missed_hit == 0);
+	clear_hits(&fdata);
+
+
+
+	/* Disable getppid and do the same thing */
+	ret = tracefs_follow_event_clear(instance, EVENT_SYSTEM, EVENT_NAME);
+	CU_TEST(ret == 0);
+
+	tracefs_trace_on(instance);
+	call_getppid(100);
+	msleep(100);
+	tracefs_trace_off(instance);
+
+	ret = tracefs_iterate_raw_events(tep, instance, NULL, 0, NULL, &fdata);
+	CU_TEST(ret == 0);
+
+	/* All but getppid should be hit */
+	CU_TEST(fdata.switch_hit > 0);
+	CU_TEST(fdata.waking_hit > 0);
+	CU_TEST(fdata.getppid_hit == 0);
+	/* No missed events */
+	CU_TEST(fdata.missed_hit == 0);
+	clear_hits(&fdata);
+
+
+
+	/* Add function and remove sched */
+	ret = tracefs_follow_event(tep, instance, "ftrace", "function",
+				   function_callback, &fdata);
+	CU_TEST(ret == 0);
+	ret = tracefs_follow_event_clear(instance, "sched", NULL);
+	CU_TEST(ret == 0);
+
+	tracefs_trace_on(instance);
+	call_getppid(100);
+	system("ls -l /usr/bin > /dev/null");
+	tracefs_trace_off(instance);
+
+	ret = tracefs_iterate_raw_events(tep, instance, NULL, 0, NULL, &fdata);
+	CU_TEST(ret == 0);
+
+	/* Nothing should have been hit */
+	CU_TEST(fdata.switch_hit == 0);
+	CU_TEST(fdata.waking_hit == 0);
+	CU_TEST(fdata.getppid_hit == 0);
+	/* No missed events */
+	CU_TEST(fdata.missed_hit == 0);
+	clear_hits(&fdata);
+
+
+	/* Enable function tracing and see if we missed hits */
+	ret = tracefs_tracer_set(instance, TRACEFS_TRACER_FUNCTION);
+	CU_TEST(ret == 0);
+
+	fdata.function = tep_find_event_by_name(tep, "ftrace", "function");
+	CU_TEST(fdata.function != NULL);
+	if (!fdata.function)
+		return;
+
+	/* Shrink the buffer to make sure we have missed events */
+	page_size = getpagesize();
+	save_size = tracefs_instance_get_buffer_size(instance, 0);
+	ret = tracefs_instance_set_buffer_size(instance, page_size * 4, 0);
+	CU_TEST(ret == 0);
+
+	tracefs_trace_on(instance);
+	call_getppid(100);
+	/* Stir the kernel a bit */
+	list = tracefs_event_systems(NULL);
+	tracefs_list_free(list);
+	system("ls -l /usr/bin > /dev/null");
+	tracefs_trace_off(instance);
+
+	ret = tracefs_iterate_raw_events(tep, instance, NULL, 0, NULL, &fdata);
+	CU_TEST(ret == 0);
+
+	ret = tracefs_instance_set_buffer_size(instance, save_size, 0);
+	CU_TEST(ret == 0);
+
+	/* Nothing should have been hit */
+	CU_TEST(fdata.switch_hit == 0);
+	CU_TEST(fdata.waking_hit == 0);
+	CU_TEST(fdata.getppid_hit == 0);
+	/* We should have missed events! */
+	CU_TEST(fdata.missed_hit > 0);
+	clear_hits(&fdata);
+
+
+	/* Now remove missed events follower */
+	ret = tracefs_follow_missed_events_clear(instance);
+	CU_TEST(ret == 0);
+
+	tracefs_trace_on(instance);
+	call_getppid(100);
+	sleep(1);
+	tracefs_trace_off(instance);
+
+	ret = tracefs_iterate_raw_events(tep, instance, NULL, 0, NULL, &fdata);
+	CU_TEST(ret == 0);
+
+	/* Nothing should have been hit */
+	CU_TEST(fdata.switch_hit == 0);
+	CU_TEST(fdata.waking_hit == 0);
+	CU_TEST(fdata.getppid_hit == 0);
+	/* No missed events either */
+	CU_TEST(fdata.missed_hit == 0);
+	clear_hits(&fdata);
+
+	/* Turn everything off */
+	tracefs_tracer_clear(instance);
+	tracefs_event_disable(instance, NULL, NULL);
+
+	tracefs_trace_on(instance);
+
+	/* Clear the function follower */
+	ret = tracefs_follow_event_clear(instance, NULL, "function");
+
+	/* Should not have any more followers */
+	ret = tracefs_follow_event_clear(instance, NULL, NULL);
+	CU_TEST(ret != 0);
+
+	/* Nor missed event followers */
+	ret = tracefs_follow_missed_events_clear(instance);
+	CU_TEST(ret != 0);
+}
+
+static void test_follow_events_clear(void)
+{
+	test_instance_follow_events_clear(NULL);
+	test_instance_follow_events_clear(test_instance);
 }
 
 extern char *find_tracing_dir(bool debugfs, bool mount);
@@ -928,11 +1952,11 @@ static void test_cpu_pipe(struct test_cpu_data *data, int expect)
 	CU_TEST(cnt == expect);
 }
 
-static void test_instance_trace_cpu_pipe(struct tracefs_instance *instance)
+static void test_instance_trace_cpu_pipe(struct tracefs_instance *instance, bool map)
 {
 	struct test_cpu_data data;
 
-	if (setup_trace_cpu(instance, &data))
+	if (setup_trace_cpu(instance, &data, true, map))
 		return;
 
 	test_cpu_pipe(&data, 1);
@@ -946,8 +1970,12 @@ static void test_instance_trace_cpu_pipe(struct tracefs_instance *instance)
 
 static void test_trace_cpu_pipe(void)
 {
-	test_instance_trace_cpu_pipe(NULL);
-	test_instance_trace_cpu_pipe(test_instance);
+	test_instance_trace_cpu_pipe(NULL, false);
+	if (mapping_is_supported)
+		test_instance_trace_cpu_pipe(NULL, true);
+	test_instance_trace_cpu_pipe(test_instance, false);
+	if (mapping_is_supported)
+		test_instance_trace_cpu_pipe(test_instance, true);
 }
 
 static struct tracefs_dynevent **get_dynevents_check(enum tracefs_dynevent_type types, int count)
@@ -983,7 +2011,7 @@ struct test_synth {
 	char *match_name;
 };
 
-static void test_synth_compare(struct test_synth *synth, struct tracefs_dynevent **devents)
+static void test_synth_compare(struct test_synth *sevents, struct tracefs_dynevent **devents)
 {
 	enum tracefs_dynevent_type stype;
 	char *format;
@@ -994,14 +2022,25 @@ static void test_synth_compare(struct test_synth *synth, struct tracefs_dynevent
 		stype = tracefs_dynevent_info(devents[i], NULL,
 					      &event, NULL, NULL, &format);
 		CU_TEST(stype == TRACEFS_DYNEVENT_SYNTH);
-		CU_TEST(strcmp(event, synth[i].name) == 0);
-		if (synth[i].match_name) {
-			CU_TEST(strstr(format, synth[i].match_name) != NULL);
+		if (stype != TRACEFS_DYNEVENT_SYNTH)
+			continue;
+		CU_TEST(event && sevents[i].name && strcmp(event, sevents[i].name) == 0);
+		if (sevents[i].match_name) {
+			CU_TEST(strstr(format, sevents[i].match_name) != NULL);
 		}
 		free(event);
 		free(format);
 	}
 	CU_TEST(devents == NULL || devents[i] == NULL);
+}
+
+static void destroy_dynevents(unsigned int type)
+{
+	int ret;
+
+	ret = tracefs_dynevent_destroy_all(type, true);
+	CU_TEST(ret == 0);
+	get_dynevents_check(type, 0);
 }
 
 static void test_instance_synthetic(struct tracefs_instance *instance)
@@ -1023,9 +2062,7 @@ static void test_instance_synthetic(struct tracefs_instance *instance)
 	CU_TEST(tep != NULL);
 
 	/* kprobes APIs */
-	ret = tracefs_dynevent_destroy_all(TRACEFS_DYNEVENT_SYNTH, true);
-	CU_TEST(ret == 0);
-	get_dynevents_check(TRACEFS_DYNEVENT_SYNTH, 0);
+	destroy_dynevents(TRACEFS_DYNEVENT_SYNTH);
 
 	for (i = 0; i < sevents_count; i++) {
 		synth[i] = tracefs_synth_alloc(tep,  sevents[i].name,
@@ -1045,6 +2082,12 @@ static void test_instance_synthetic(struct tracefs_instance *instance)
 
 	devents = get_dynevents_check(TRACEFS_DYNEVENT_SYNTH, sevents_count);
 	CU_TEST(devents != NULL);
+	if (!devents)
+		goto out;
+	CU_TEST(devents[sevents_count] == NULL);
+	if (devents[sevents_count])
+		goto out;
+
 	test_synth_compare(sevents, devents);
 	tracefs_dynevent_list_free(devents);
 
@@ -1055,6 +2098,7 @@ static void test_instance_synthetic(struct tracefs_instance *instance)
 
 	get_dynevents_check(TRACEFS_DYNEVENT_SYNTH, 0);
 
+ out:
 	for (i = 0; i < sevents_count; i++)
 		tracefs_synth_free(synth[i]);
 
@@ -1251,9 +2295,7 @@ static void test_kprobes_instance(struct tracefs_instance *instance)
 	CU_TEST(tracefs_kretprobe_raw("test", "test", NULL, "test") != 0);
 
 	/* kprobes APIs */
-	ret = tracefs_dynevent_destroy_all(TRACEFS_DYNEVENT_KPROBE | TRACEFS_DYNEVENT_KRETPROBE, true);
-	CU_TEST(ret == 0);
-	get_dynevents_check(TRACEFS_DYNEVENT_KPROBE | TRACEFS_DYNEVENT_KRETPROBE, 0);
+	destroy_dynevents(TRACEFS_DYNEVENT_KPROBE | TRACEFS_DYNEVENT_KRETPROBE);
 
 	for (i = 0; i < kprobe_count; i++) {
 		dkprobe[i] = tracefs_kprobe_alloc(ktests[i].system, ktests[i].event,
@@ -1318,9 +2360,7 @@ static void test_kprobes_instance(struct tracefs_instance *instance)
 		tracefs_dynevent_free(dkretprobe[i]);
 
 	/* kprobes raw APIs */
-	ret = tracefs_dynevent_destroy_all(TRACEFS_DYNEVENT_KPROBE | TRACEFS_DYNEVENT_KRETPROBE, true);
-	CU_TEST(ret == 0);
-	get_dynevents_check(TRACEFS_DYNEVENT_KPROBE | TRACEFS_DYNEVENT_KRETPROBE, 0);
+	destroy_dynevents(TRACEFS_DYNEVENT_KPROBE | TRACEFS_DYNEVENT_KRETPROBE);
 
 	for (i = 0; i < kprobe_count; i++) {
 		ret = tracefs_kprobe_raw(ktests[i].system, ktests[i].event,
@@ -1356,9 +2396,27 @@ static void test_kprobes_instance(struct tracefs_instance *instance)
 	tracefs_dynevent_list_free(devents);
 	devents = NULL;
 
-	ret = tracefs_dynevent_destroy_all(TRACEFS_DYNEVENT_KPROBE | TRACEFS_DYNEVENT_KRETPROBE, true);
-	CU_TEST(ret == 0);
-	get_dynevents_check(TRACEFS_DYNEVENT_KPROBE | TRACEFS_DYNEVENT_KRETPROBE, 0);
+	/* Try destroying all the events using tracefs_kprobe_destroy */
+	for (i = 0; i < kprobe_count; i++) {
+		ret = tracefs_kprobe_destroy(ktests[i].system, ktests[i].event,
+					     ktests[i].address, ktests[i].format, true);
+		CU_TEST(ret == 0);
+		devents = get_dynevents_check(TRACEFS_DYNEVENT_KPROBE,
+					      kprobe_count - (i + 1));
+		tracefs_dynevent_list_free(devents);
+	}
+	get_dynevents_check(TRACEFS_DYNEVENT_KPROBE, 0);
+
+	for (i = 0; i < kretprobe_count; i++) {
+		ret = tracefs_kprobe_destroy(kretests[i].system, kretests[i].event,
+					     kretests[i].address, kretests[i].format, true);
+		CU_TEST(ret == 0);
+		devents = get_dynevents_check(TRACEFS_DYNEVENT_KRETPROBE,
+					      kretprobe_count - (i + 1));
+		tracefs_dynevent_list_free(devents);
+	}
+	get_dynevents_check(TRACEFS_DYNEVENT_KRETPROBE, 0);
+
 	free(dkretprobe);
 	free(dkprobe);
 	tep_free(tep);
@@ -1383,7 +2441,6 @@ static void test_eprobes_instance(struct tracefs_instance *instance)
 	struct tep_handle *tep;
 	char *tsys, *tevent;
 	char *tmp, *sav;
-	int ret;
 	int i;
 
 	tep = tep_alloc();
@@ -1396,9 +2453,7 @@ static void test_eprobes_instance(struct tracefs_instance *instance)
 	CU_TEST(tracefs_eprobe_alloc("test", "test", NULL, "test", "test") == NULL);
 	CU_TEST(tracefs_eprobe_alloc("test", "test", "test", NULL, "test") == NULL);
 
-	ret = tracefs_dynevent_destroy_all(TRACEFS_DYNEVENT_EPROBE, true);
-	CU_TEST(ret == 0);
-	get_dynevents_check(TRACEFS_DYNEVENT_EPROBE, 0);
+	destroy_dynevents(TRACEFS_DYNEVENT_EPROBE);
 
 	for (i = 0; i < count; i++) {
 		tmp = strdup(etests[i].address);
@@ -1618,6 +2673,193 @@ static void test_instance_file(void)
 	free(inst_dir);
 }
 
+static bool test_check_file_content(struct tracefs_instance *instance, char *file,
+				    char *content, bool full_match, bool ignore_comments)
+{
+	char *save = NULL;
+	char *buf, *line;
+	bool ret = false;
+	int len;
+
+	if (!tracefs_file_exists(instance, file))
+		return false;
+
+	buf = tracefs_instance_file_read(instance, file, NULL);
+	if (strlen(content) == 0) {
+		/* check for empty file */
+		if (!buf)
+			return true;
+		if (!ignore_comments) {
+			if (strlen(buf) > 0)
+				goto out;
+		} else {
+			line = strtok_r(buf, "\n", &save);
+			while (line) {
+				if (line[0] != '#')
+					goto out;
+				line = strtok_r(NULL, "\n", &save);
+			}
+		}
+	} else {
+		if (!buf || strlen(buf) < 1)
+			return false;
+		if (full_match) {
+			/* strip the newline */
+			len = strlen(buf) - 1;
+			while (buf[len] == '\n' || buf[len] == '\r') {
+				buf[len] = '\0';
+				len = strlen(buf) - 1;
+				if (len < 0)
+					goto out;
+			}
+			if (strcmp(buf, content))
+				goto out;
+		} else {
+			if (!strstr(buf, content))
+				goto out;
+		}
+	}
+
+	ret = true;
+out:
+	free(buf);
+	return ret;
+}
+
+static bool test_check_event_file_content(struct tracefs_instance *instance,
+					  char *system, char *event, char *file,
+					  char *content, bool full_match, bool ignore_comments)
+{
+	char *efile;
+	int ret;
+
+	ret = asprintf(&efile, "events/%s/%s/%s", system, event, file);
+	if (ret <= 0)
+		return false;
+	ret = test_check_file_content(instance, efile, content, full_match, ignore_comments);
+	free(efile);
+	return ret;
+}
+
+static bool check_cpu_mask(struct tracefs_instance *instance)
+{
+	int cpus = sysconf(_SC_NPROCESSORS_CONF);
+	int fullwords = (cpus - 1) / 32;
+	int bits = (cpus - 1) % 32 + 1;
+	int len = (fullwords + 1) * 9;
+	char buf[len + 1];
+
+	buf[0] = '\0';
+	sprintf(buf, "%x", (unsigned int)((1ULL << bits) - 1));
+	while (fullwords-- > 0)
+		strcat(buf, ",ffffffff");
+
+	return test_check_file_content(instance, "tracing_cpumask", buf, true, false);
+}
+
+static bool test_instance_check_default_state(struct tracefs_instance *instance)
+{
+	char **systems;
+	char **events;
+	int i, j;
+	int ok;
+
+	if (tracefs_trace_is_on(instance) != 1)
+		return false;
+	if (!test_check_file_content(instance, "current_tracer", "nop", true, false))
+		return false;
+	if (!test_check_file_content(instance, "events/enable", "0", true, false))
+		return false;
+	if (!test_check_file_content(instance, "set_ftrace_pid", "no pid", true, false))
+		return false;
+	if (!test_check_file_content(instance, "trace", "", true, true))
+		return false;
+	if (!test_check_file_content(instance, "error_log", "", true, false))
+		return false;
+	if (!test_check_file_content(instance, "trace_clock", "[local]", false, false))
+		return false;
+	if (!test_check_file_content(instance, "set_event_pid", "", true, false))
+		return false;
+	if (!test_check_file_content(instance, "tracing_max_latency", "0", true, false))
+		return false;
+	if (!test_check_file_content(instance, "set_ftrace_filter", "", true, true))
+		return false;
+	if (!test_check_file_content(instance, "set_ftrace_notrace", "", true, true))
+		return false;
+	if (!check_cpu_mask(instance))
+		return false;
+
+	ok = 1;
+	systems = tracefs_event_systems(NULL);
+	if (systems) {
+		for (i = 0; systems[i]; i++) {
+			events = tracefs_system_events(NULL, systems[i]);
+			if (!events)
+				continue;
+			for (j = 0; events[j]; j++) {
+				if (!test_check_event_file_content(instance, systems[i], events[j],
+								    "enable", "0", true, false))
+					break;
+				if (!test_check_event_file_content(instance, systems[i], events[j],
+								    "filter", "none", true, false))
+					break;
+				if (!test_check_event_file_content(instance, systems[i], events[j],
+								    "trigger", "", true, true))
+					break;
+			}
+			if (events[j])
+				ok = 0;
+			tracefs_list_free(events);
+			if (!ok)
+				return false;
+		}
+		tracefs_list_free(systems);
+	}
+
+	return true;
+}
+
+static void test_instance_reset(void)
+{
+	struct tracefs_instance *instance = NULL;
+	const char *name = get_rand_str();
+	char **tracers;
+
+	CU_TEST(tracefs_instance_exists(name) == false);
+	instance = tracefs_instance_create(name);
+	CU_TEST(instance != NULL);
+
+	CU_TEST(test_instance_check_default_state(instance) == true);
+
+	tracers = tracefs_instance_tracers(instance);
+	CU_TEST(tracers != NULL);
+	if (tracers) {
+		CU_TEST(tracefs_tracer_set(instance, TRACEFS_TRACER_CUSTOM, tracers[0]) == 0);
+		tracefs_list_free(tracers);
+	}
+	CU_TEST(tracefs_event_enable(instance, "sched", "sched_switch") == 0);
+	CU_TEST(tracefs_instance_file_write(instance, "set_ftrace_pid", "5") > 0);
+	CU_TEST(tracefs_instance_file_write(instance, "trace_clock", "global") > 0);
+	CU_TEST(tracefs_instance_file_write(instance, "set_event_pid", "5") > 0);
+	CU_TEST(tracefs_instance_file_write(instance, "set_ftrace_filter",
+						      "schedule:stacktrace") > 0);
+	CU_TEST(tracefs_instance_file_write(instance, "set_ftrace_notrace",
+						      "schedule:stacktrace") > 0);
+	CU_TEST(tracefs_instance_file_write(instance, "tracing_cpumask", "0f") > 0);
+	CU_TEST(tracefs_event_file_write(instance, "syscalls", "sys_exit_read", "trigger",
+						      "enable_event:kmem:kmalloc:1") > 0);
+	CU_TEST(tracefs_event_file_write(instance, "sched", "sched_switch", "filter",
+						      "common_pid == 5") > 0);
+
+	CU_TEST(test_instance_check_default_state(instance) == false);
+
+	tracefs_instance_reset(instance);
+	CU_TEST(test_instance_check_default_state(instance) == true);
+
+	CU_TEST(tracefs_instance_destroy(instance) == 0);
+	tracefs_instance_free(instance);
+}
+
 static bool check_fd_name(int fd, const char *dir, const char *name)
 {
 	char link[PATH_MAX + 1];
@@ -1693,6 +2935,7 @@ static void test_instance_file_fd(struct tracefs_instance *instance)
 	const char *name = get_rand_str();
 	const char *tdir = tracefs_instance_get_trace_dir(instance);
 	long long res = -1;
+	long long res2;
 	char rd[2];
 	int fd;
 
@@ -1712,7 +2955,34 @@ static void test_instance_file_fd(struct tracefs_instance *instance)
 	CU_TEST(read(fd, &rd, 1) == 1);
 	rd[1] = 0;
 	CU_TEST(res == atoi(rd));
+	close(fd);
 
+	/* Inverse tracing_on and test changing it with write_number */
+	res ^= 1;
+
+	CU_TEST(tracefs_instance_file_write_number(instance, TRACE_ON, (size_t)res) == 0);
+
+	CU_TEST(tracefs_instance_file_read_number(instance, TRACE_ON, &res2) == 0);
+	CU_TEST(res2 == res);
+	fd = tracefs_instance_file_open(instance, TRACE_ON, O_RDONLY);
+	CU_TEST(fd >= 0);
+	CU_TEST(read(fd, &rd, 1) == 1);
+	rd[1] = 0;
+	CU_TEST(res2 == atoi(rd));
+	close(fd);
+
+	/* Put back the result of tracing_on */
+	res ^= 1;
+
+	CU_TEST(tracefs_instance_file_write_number(instance, TRACE_ON, (size_t)res) == 0);
+
+	CU_TEST(tracefs_instance_file_read_number(instance, TRACE_ON, &res2) == 0);
+	CU_TEST(res2 == res);
+	fd = tracefs_instance_file_open(instance, TRACE_ON, O_RDONLY);
+	CU_TEST(fd >= 0);
+	CU_TEST(read(fd, &rd, 1) == 1);
+	rd[1] = 0;
+	CU_TEST(res2 == atoi(rd));
 	close(fd);
 }
 
@@ -2311,6 +3581,7 @@ static void test_custom_trace_dir(void)
 
 static int test_suite_destroy(void)
 {
+	tracefs_instance_reset(NULL);
 	tracefs_instance_destroy(test_instance);
 	tracefs_instance_free(test_instance);
 	tep_free(test_tep);
@@ -2319,14 +3590,21 @@ static int test_suite_destroy(void)
 
 static int test_suite_init(void)
 {
-	const char *systems[] = {"ftrace", NULL};
-
-	test_tep = tracefs_local_events_system(NULL, systems);
+	test_tep = tracefs_local_events(NULL);
 	if (test_tep == NULL)
 		return 1;
 	test_instance = tracefs_instance_create(TEST_INSTANCE_NAME);
 	if (!test_instance)
 		return 1;
+
+	mapping_is_supported = tracefs_mapped_is_supported();
+	if (mapping_is_supported)
+		printf("Testing mmapped buffers too\n");
+	else
+		printf("Memory mapped buffers not supported\n");
+
+	/* Start with a new slate */
+	tracefs_instance_reset(NULL);
 
 	return 0;
 }
@@ -2344,23 +3622,51 @@ void test_tracefs_lib(void)
 	CU_add_test(suite, "Test tracefs/debugfs mounting", test_mounting);
 	CU_add_test(suite, "trace cpu read",
 		    test_trace_cpu_read);
+	CU_add_test(suite, "trace cpu read_buf_percent",
+		    test_trace_cpu_read_buf_percent);
 	CU_add_test(suite, "trace cpu pipe",
 		    test_trace_cpu_pipe);
+	CU_add_test(suite, "trace pid events filter",
+		    test_trace_events_pid_filter);
+	CU_add_test(suite, "trace pid function filter",
+		    test_trace_function_pid_filter);
 	CU_add_test(suite, "trace sql",
 		    test_trace_sql);
+	CU_add_test(suite, "trace sql trace onmax",
+		    test_trace_sql_trace_onmax);
+	CU_add_test(suite, "trace sql trace onchange",
+		    test_trace_sql_trace_onchange);
+	CU_add_test(suite, "trace sql snapshot onmax",
+		    test_trace_sql_snapshot_onmax);
+	CU_add_test(suite, "trace sql snapshot onchange",
+		    test_trace_sql_snapshot_onchange);
+	CU_add_test(suite, "trace sql save onmax",
+		    test_trace_sql_save_onmax);
+	CU_add_test(suite, "trace sql save onchange",
+		    test_trace_sql_save_onchange);
+	CU_add_test(suite, "trace sql trace and snapshot onmax",
+		    test_trace_sql_trace_snapshot_onmax);
+	CU_add_test(suite, "trace sql trace and snapshot onchange",
+		    test_trace_sql_trace_snapshot_onchange);
 	CU_add_test(suite, "tracing file / directory APIs",
 		    test_trace_file);
 	CU_add_test(suite, "instance file / directory APIs",
 		    test_file_fd);
 	CU_add_test(suite, "instance file descriptor",
 		    test_instance_file);
+	CU_add_test(suite, "instance reset",
+		    test_instance_reset);
 	CU_add_test(suite, "systems and events APIs",
 		    test_system_event);
+	CU_add_test(suite, "tracefs_iterate_snapshot_events API",
+		    test_iter_snapshot_events);
+
 	CU_add_test(suite, "tracefs_iterate_raw_events API",
 		    test_iter_raw_events);
 
 	/* Follow events test must be after the iterate raw events above */
 	CU_add_test(suite, "Follow events", test_follow_events);
+	CU_add_test(suite, "Follow events clear", test_follow_events_clear);
 
 	CU_add_test(suite, "tracefs_tracers API",
 		    test_tracers);

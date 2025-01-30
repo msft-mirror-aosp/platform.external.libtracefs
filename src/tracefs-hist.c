@@ -13,6 +13,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
+#include <ctype.h>
 #include <sys/time.h>
 #include <sys/types.h>
 
@@ -416,6 +417,9 @@ int tracefs_hist_add_key_cnt(struct tracefs_hist *hist, const char *key,
 	case TRACEFS_HIST_KEY_BUCKETS:
 		ret = asprintf(&key_type, "%s.buckets=%d", key, cnt);
 		break;
+	case TRACEFS_HIST_KEY_STACKTRACE:
+		ret = asprintf(&key_type, "%s.stacktrace", key);
+		break;
 	case TRACEFS_HIST_KEY_MAX:
 		/* error */
 		break;
@@ -500,13 +504,22 @@ add_sort_key(struct tracefs_hist *hist, const char *sort_key, char **list)
 {
 	char **key_list = hist->keys;
 	char **val_list = hist->values;
+	char *dot;
+	int len;
 	int i;
 
 	if (strcmp(sort_key, TRACEFS_HIST_HITCOUNT) == 0)
 		goto out;
 
+	len = strlen(sort_key);
+
 	for (i = 0; key_list[i]; i++) {
 		if (strcmp(key_list[i], sort_key) == 0)
+			break;
+		dot = strchr(key_list[i], '.');
+		if (!dot || dot - key_list[i] != len)
+			continue;
+		if (strncmp(key_list[i], sort_key, len) == 0)
 			break;
 	}
 
@@ -583,8 +596,10 @@ int tracefs_hist_set_sort_key(struct tracefs_hist *hist,
 		if (!sort_key)
 			break;
 		tmp = add_sort_key(hist, sort_key, list);
-		if (!tmp)
+		if (!tmp) {
+			va_end(ap);
 			goto fail;
+		}
 		list = tmp;
 	}
 	va_end(ap);
@@ -736,6 +751,7 @@ struct name_hash {
  * @start_parens: Current parenthesis level for start event
  * @end_parens: Current parenthesis level for end event
  * @new_format: onmatch().trace(synth_event,..) or onmatch().synth_event(...)
+ * @created: Set if tracefs_synth_create() was called on this; cleared on destroy()
  */
 struct tracefs_synth {
 	struct tracefs_instance *instance;
@@ -766,6 +782,7 @@ struct tracefs_synth {
 	char			arg_name[16];
 	int			arg_cnt;
 	bool			new_format;
+	bool			created;
 };
 
  /*
@@ -915,7 +932,8 @@ static char *add_synth_field(const struct tep_format_field *field,
 	bool sign;
 
 	if (field->flags & TEP_FIELD_IS_ARRAY) {
-		str = strdup("char");
+		str = strdup(field->type);
+		str = strtok(str, "[");
 		str = append_string(str, " ", name);
 		str = append_string(str, NULL, "[");
 
@@ -966,6 +984,9 @@ static char *add_synth_field(const struct tep_format_field *field,
 		errno = EBADF;
 		return NULL;
 	}
+
+	if (field == &common_stacktrace)
+		type = field->type;
 
 	str = strdup(type);
 	str = append_string(str, " ", name);
@@ -1555,7 +1576,7 @@ int tracefs_synth_add_end_field(struct tracefs_synth *synth,
 	const struct tep_format_field *field;
 	const char *hname = NULL;
 	char *tmp_var = NULL;
-	int ret;
+	int ret = -1;
 
 	if (!synth || !end_field) {
 		errno = EINVAL;
@@ -1573,15 +1594,15 @@ int tracefs_synth_add_end_field(struct tracefs_synth *synth,
 		tmp_var = new_arg(synth);
 
 	if (!trace_verify_event_field(synth->end_event, end_field, &field))
-		return -1;
+		goto out;
 
 	ret = add_var(&synth->end_vars, name ? hname : tmp_var, end_field, false);
 	if (ret)
 		goto out;
 
 	ret = add_synth_fields(synth, field, name, hname ? : tmp_var);
-	free(tmp_var);
  out:
+	free(tmp_var);
 	return ret;
 }
 
@@ -1669,27 +1690,81 @@ int tracefs_synth_append_end_filter(struct tracefs_synth *synth,
 				   type, field, compare, val);
 }
 
-static int test_max_var(struct tracefs_synth *synth, const char *var)
+static bool var_match(const char *match, const char *var, int match_len, int len)
+{
+	char copy[match_len + 1];
+	char *p, *e;
+
+	strncpy(copy, match, match_len + 1);
+	copy[match_len] = '\0';
+
+	p = copy;
+
+	if (*p == '$')
+		p++;
+
+	if (strncmp(p, var, len) == 0)
+		return true;
+
+	/* Check if this was hashed __<var>_<number>_<number> */
+	if (p[0] != '_' || p[1] != '_')
+		return false;
+
+	p += 2;
+
+	e = copy + match_len - 1;
+	if (!isdigit(*e))
+		return false;
+	while (isdigit(*e) && e > p)
+		e--;
+	if (e == p || *e != '_')
+		return false;
+
+	e--;
+	if (!isdigit(*e))
+		return false;
+	while (isdigit(*e) && e > p)
+		e--;
+	if (e == p || *e != '_')
+		return false;
+
+	if (e - p != len)
+		return false;
+
+	*e = '\0';
+
+	return strncmp(p, var, len) == 0;
+}
+
+static char *test_max_var(struct tracefs_synth *synth, const char *var)
 {
 	char **vars = synth->end_vars;
+	char *ret;
 	char *p;
 	int len;
 	int i;
 
 	len = strlen(var);
+	if (var[0] == '$') {
+		var++;
+		len--;
+	}
 
 	/* Make sure the var is defined for the end event */
 	for (i = 0; vars[i]; i++) {
 		p = strchr(vars[i], '=');
 		if (!p)
 			continue;
-		if (p - vars[i] != len)
-			continue;
-		if (!strncmp(var, vars[i], len))
-			return 0;
+
+		if (var_match(vars[i], var, p - vars[i], len)) {
+			i = asprintf(&ret, "%.*s", (int)(p - vars[i]), vars[i]);
+			if (i < 0)
+				return NULL;
+			return ret;
+		}
 	}
 	errno = ENODEV;
-	return -1;
+	return NULL;
 }
 
 static struct action *create_action(enum tracefs_synth_handler type,
@@ -1697,14 +1772,16 @@ static struct action *create_action(enum tracefs_synth_handler type,
 				    const char *var)
 {
 	struct action *action;
+	char *newvar = NULL;
 	int ret;
 
 	switch (type) {
 	case TRACEFS_SYNTH_HANDLE_MAX:
 	case TRACEFS_SYNTH_HANDLE_CHANGE:
-		ret = test_max_var(synth, var);
-		if (ret < 0)
+		newvar = test_max_var(synth, var);
+		if (!newvar)
 			return NULL;
+		var = newvar;
 		break;
 	default:
 		break;
@@ -1712,15 +1789,18 @@ static struct action *create_action(enum tracefs_synth_handler type,
 
 	action = calloc(1, sizeof(*action));
 	if (!action)
-		return NULL;
+		goto out;
 
 	if (var) {
 		ret = asprintf(&action->handle_field, "$%s", var);
-		if (!action->handle_field) {
+		if (ret < 0) {
 			free(action);
+			free(newvar);
 			return NULL;
 		}
 	}
+ out:
+	free(newvar);
 	return action;
 }
 
@@ -1820,8 +1900,6 @@ int tracefs_synth_save(struct tracefs_synth *synth,
 
 	action->type = ACTION_SAVE;
 	action->handler = type;
-	*synth->next_action = action;
-	synth->next_action = &action->next;
 
 	save = strdup(".save(");
 	if (!save)
@@ -2179,6 +2257,25 @@ tracefs_synth_get_start_hist(struct tracefs_synth *synth)
 }
 
 /**
+ * tracefs_synth_set_instance - Set the ftrace instance of the synthetic events
+ * @synth: The tracefs_synth descriptor
+ * @instance: ftrace instance
+ *
+ * Set the ftrace instance, in which the synthetic event will be created. By default,
+ * the top instance is used. This API must be called before the call to tracefs_synth_create(),
+ * in order to use the new instance when creating the event.
+ *
+ * Returns 0 on success and -1 on error.
+ */
+int tracefs_synth_set_instance(struct tracefs_synth *synth, struct tracefs_instance *instance)
+{
+	if (!synth || synth->created)
+		return -1;
+	synth->instance = instance;
+	return 0;
+}
+
+/**
  * tracefs_synth_create - creates the synthetic event on the system
  * @synth: The tracefs_synth descriptor
  *
@@ -2235,6 +2332,8 @@ int tracefs_synth_create(struct tracefs_synth *synth)
 					"trigger", synth->end_hist);
 	if (ret < 0)
 		goto remove_start_hist;
+
+	synth->created = true;
 
 	return 0;
 
@@ -2298,6 +2397,9 @@ int tracefs_synth_destroy(struct tracefs_synth *synth)
 	free(hist);
 
 	ret = tracefs_dynevent_destroy(synth->dyn_event, true);
+
+	if (!ret)
+		synth->created = false;
 
 	return ret ? -1 : 0;
 }
