@@ -62,6 +62,7 @@ cc_library {
 
     cflags: [
         "-D_GNU_SOURCE",
+        "-Wno-gnu",
         "-Wno-unused-parameter",
     ],
 
