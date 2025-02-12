@@ -248,7 +248,7 @@ static int test_dir(const char *dir, const char *file)
  */
 const char *tracefs_tracing_dir(void)
 {
-	static const char *tracing_dir;
+	static char *tracing_dir;
 
 	/* Do not check custom_tracing_dir */
 	if (custom_tracing_dir)
@@ -257,6 +257,7 @@ const char *tracefs_tracing_dir(void)
 	if (tracing_dir && test_dir(tracing_dir, "trace"))
 		return tracing_dir;
 
+	free(tracing_dir);
 	tracing_dir = find_tracing_dir(false, true);
 	return tracing_dir;
 }
@@ -317,6 +318,26 @@ char *tracefs_get_tracing_file(const char *name)
 void tracefs_put_tracing_file(char *name)
 {
 	free(name);
+}
+
+/* The function is copied from trace-cmd */
+__hidden char *strstrip(char *str)
+{
+	char *s;
+
+	if (!str)
+		return NULL;
+
+	s = str + strlen(str) - 1;
+	while (s >= str && isspace(*s))
+		s--;
+	s++;
+	*s = '\0';
+
+	for (s = str; *s && isspace(*s); s++)
+		;
+
+	return s;
 }
 
 __hidden int str_read_file(const char *file, char **buffer, bool warn)
@@ -621,4 +642,31 @@ bool tracefs_tracer_available(const char *tracing_dir, const char *tracer)
 
 	tracefs_list_free(tracers);
 	return ret;
+}
+
+/**
+ * tracefs_instance_get_buffer_percent - get the instance buffer percent
+ * @instance: The instance to get from (NULL for toplevel)
+ *
+ * Returns the buffer percent setting of the given instance.
+ *  (-1 if not found).
+ */
+int tracefs_instance_get_buffer_percent(struct tracefs_instance *instance)
+{
+	long long val;
+	int ret;
+
+	ret = tracefs_instance_file_read_number(instance, "buffer_percent", &val);
+	return !ret ? (int)val : ret;
+}
+
+/**
+ * tracefs_instance_set_buffer_percent - set the instance buffer percent
+ * @instance: The instance to set (NULL for toplevel)
+ *
+ * Returns zero on success or -1 on error
+ */
+int tracefs_instance_set_buffer_percent(struct tracefs_instance *instance, int val)
+{
+	return tracefs_instance_file_write_number(instance, "buffer_percent", val);
 }

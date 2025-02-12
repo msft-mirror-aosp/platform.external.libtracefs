@@ -39,6 +39,13 @@ enum field_type {
 #define for_each_field(expr, field, table) \
 	for (expr = (table)->fields; expr; expr = (field)->next)
 
+#define TIMESTAMP_COMPARE "TIMESTAMP_DELTA"
+#define TIMESTAMP_USECS_COMPARE "TIMESTAMP_DELTA_USECS"
+#define EVENT_START	"__START_EVENT__"
+#define EVENT_END	"__END_EVENT__"
+#define TIMESTAMP_NSECS "TIMESTAMP"
+#define TIMESTAMP_USECS "TIMESTAMP_USECS"
+
 struct field {
 	struct expr		*next;	/* private link list */
 	const char		*system;
@@ -114,7 +121,7 @@ __hidden int my_yyinput(void *extra, char *buf, int max)
 	struct sqlhist_bison *sb = extra;
 
 	if (!sb || !sb->buffer)
-		return -1;
+		return 0;
 
 	if (sb->buffer_idx + max > sb->buffer_size)
 		max = sb->buffer_size - sb->buffer_idx;
@@ -374,6 +381,44 @@ __hidden void *add_field(struct sqlhist_bison *sb,
 	struct sql_table *table = sb->table;
 	struct expr *expr;
 	struct field *field;
+	bool nsecs;
+
+	/* Check if this is a TIMESTAMP compare */
+	if ((nsecs = (strcmp(field_name, TIMESTAMP_COMPARE) == 0)) ||
+	    strcmp(field_name, TIMESTAMP_USECS_COMPARE) == 0) {
+		const char *field_nameA;
+		const char *field_nameB;
+		struct expr *exprA;
+		struct expr *exprB;
+		struct field *fieldA;
+		struct field *fieldB;
+
+		if (nsecs) {
+			field_nameA = EVENT_END "." TIMESTAMP_NSECS;
+			field_nameB = EVENT_START "." TIMESTAMP_NSECS;
+		} else {
+			field_nameA = EVENT_END "." TIMESTAMP_USECS;
+			field_nameB = EVENT_START "." TIMESTAMP_USECS;
+		}
+
+		exprA = find_field(sb, field_nameA, NULL);
+		if (!exprA) {
+			create_field(fieldA, &exprA);
+			fieldA->next = table->fields;
+			table->fields = exprA;
+			fieldA->raw = field_nameA;
+		}
+
+		exprB = find_field(sb, field_nameB, NULL);
+		if (!exprB) {
+			create_field(fieldB, &exprB);
+			fieldB->next = table->fields;
+			table->fields = exprB;
+			fieldB->raw = field_nameB;
+		}
+
+		return add_compare(sb, exprA, exprB, COMPARE_SUB);
+	}
 
 	expr = find_field(sb, field_name, label);
 	if (expr)
@@ -566,7 +611,8 @@ static int test_field_exists(struct tep_handle *tep,
 		return -1;
 
 	if (!strcmp(field_name, TRACEFS_TIMESTAMP) ||
-	    !strcmp(field->field, TRACEFS_TIMESTAMP_USECS))
+	    !strcmp(field->field, TRACEFS_TIMESTAMP_USECS) ||
+	    !strcmp(field->field, TRACEFS_STACKTRACE))
 		tfield = (void *)1L;
 	else
 		tfield = tep_find_any_field(field->event, field_name);
@@ -596,17 +642,25 @@ static int update_vars(struct tep_handle *tep,
 	enum field_type ftype = FIELD_NONE;
 	struct tep_event *event;
 	struct field *field;
+	const char *extra_label = NULL;
 	const char *label;
 	const char *raw = event_field->raw;
 	const char *event_name;
 	const char *system;
 	const char *p;
 	int label_len = 0, event_len, system_len;
+	int extra_label_len = 0;
 
-	if (expr == table->to)
+	if (expr == table->to) {
 		ftype = FIELD_TO;
-	else if (expr == table->from)
+		extra_label = EVENT_END;
+	} else if (expr == table->from) {
 		ftype = FIELD_FROM;
+		extra_label = EVENT_START;
+	}
+
+	if (extra_label)
+		extra_label_len = strlen(extra_label);
 
 	p = strchr(raw, '.');
 	if (p) {
@@ -672,6 +726,13 @@ static int update_vars(struct tep_handle *tep,
 			goto found;
 		}
 
+		len = extra_label_len;
+		if (extra_label && !strncmp(raw, extra_label, len) &&
+		    raw[len] == '.') {
+			/* Label matches and takes precedence */
+			goto found;
+		}
+
 		if (!strncmp(raw, system, system_len) &&
 		    raw[system_len] == '.') {
 			raw += system_len + 1;
@@ -695,6 +756,8 @@ static int update_vars(struct tep_handle *tep,
 			field->field = store_str(sb, TRACEFS_TIMESTAMP);
 		if (!strcmp(field->field, "TIMESTAMP_USECS"))
 			field->field = store_str(sb, TRACEFS_TIMESTAMP_USECS);
+		if (!strcmp(field->field, "STACKTRACE"))
+			field->field = store_str(sb, TRACEFS_STACKTRACE);
 		if (test_field_exists(tep, sb, expr))
 			return -1;
 	}
@@ -747,9 +810,9 @@ static int update_fields(struct tep_handle *tep,
 			if (!p)
 				return -1;
 			field_name = store_str(sb, p);
+			free((char *)p);
 			if (!field_name)
 				return -1;
-			free((char *)p);
 		}
 
 		tfield = tep_find_any_field(event, field_name);
@@ -1046,7 +1109,7 @@ static int build_filter(struct tep_handle *tep, struct sqlhist_bison *sb,
 			     const char *val);
 	struct filter *filter = &expr->filter;
 	enum tracefs_compare cmp;
-	const char *val;
+	const char *val = NULL;
 	int and_or = TRACEFS_FILTER_AND;
 	char num[64];
 	int ret;

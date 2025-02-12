@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: LGPL-2.1
 # libtracefs version
 TFS_VERSION = 1
-TFS_PATCHLEVEL = 6
-TFS_EXTRAVERSION = 4
+TFS_PATCHLEVEL = 8
+TFS_EXTRAVERSION = 1
 TRACEFS_VERSION = $(TFS_VERSION).$(TFS_PATCHLEVEL).$(TFS_EXTRAVERSION)
 
 export TFS_VERSION
@@ -10,7 +10,8 @@ export TFS_PATCHLEVEL
 export TFS_EXTRAVERSION
 export TRACEFS_VERSION
 
-LIBTRACEEVENT_MIN_VERSION = 1.3
+# Note, samples and utests need 1.8.1
+LIBTRACEEVENT_MIN_VERSION = 1.8
 
 # taken from trace-cmd
 MAKEFLAGS += --no-print-directory
@@ -73,12 +74,25 @@ else
  endif
 endif
 
+ifndef NO_VSOCK
+VSOCK_DEFINED := $(shell if (echo "$(pound)include <linux/vm_sockets.h>" | $(CC) -E - >/dev/null 2>&1) ; then echo 1; else echo 0 ; fi)
+else
+VSOCK_DEFINED := 0
+endif
+
+ifndef NO_PERF
+PERF_DEFINED := $(shell if (echo "$(pound)include <linux/perf_event.h>" | $(CC) -E - >/dev/null 2>&1) ; then echo 1; else echo 0 ; fi)
+else
+PREF_DEFINED := 0
+endif
+
 etcdir ?= /etc
 etcdir_SQ = '$(subst ','\'',$(etcdir))'
 
 export man_dir man_dir_SQ html_install html_install_SQ INSTALL
 export img_install img_install_SQ
 export DESTDIR DESTDIR_SQ
+export VSOCK_DEFINED PERF_DEFINED
 
 pound := \#
 
@@ -151,6 +165,12 @@ INCLUDES += -I$(src)/include/tracefs
 include $(src)/scripts/features.mk
 
 # Set compile option CFLAGS if not set elsewhere
+ifdef EXTRA_CFLAGS
+  CFLAGS ?= $(EXTRA_CFLAGS)
+else
+  CFLAGS ?= -g -Wall
+endif
+
 CFLAGS ?= -g -Wall
 CPPFLAGS ?=
 LDFLAGS ?=
@@ -158,14 +178,14 @@ LDFLAGS ?=
 CUNIT_INSTALLED := $(shell if (printf "$(pound)include <CUnit/Basic.h>\n void main(){CU_initialize_registry();}" | $(CC) -x c - -lcunit -o /dev/null >/dev/null 2>&1) ; then echo 1; else echo 0 ; fi)
 export CUNIT_INSTALLED
 
-export CFLAGS
-export INCLUDES
-
 # Append required CFLAGS
 override CFLAGS += -D_GNU_SOURCE $(LIBTRACEEVENT_INCLUDES) $(INCLUDES)
 
 # Make sure 32 bit stat() works on large file systems
 override CFLAGS += -D_FILE_OFFSET_BITS=64
+
+export CFLAGS
+export INCLUDES
 
 all: all_cmd
 
@@ -243,7 +263,7 @@ $(EMACS_TAGS): force
 
 $(CSCOPE_TAGS): force
 	$(RM) $(obj)/cscope*
-	$(call find_tag_files) | cscope -b -q
+	$(call find_tag_files) | xargs cscope -b -q
 
 tags: $(VIM_TAGS)
 TAGS: $(EMACS_TAGS)
@@ -380,7 +400,7 @@ sqlhist: samples/sqlhist
 samples: libtracefs.a force
 	$(Q)$(call descend,$(src)/samples,all)
 
-clean:
+clean: clean_meson
 	$(Q)$(call descend_clean,utest)
 	$(Q)$(call descend_clean,src)
 	$(Q)$(call descend_clean,samples)
@@ -389,6 +409,19 @@ clean:
 	  $(PKG_CONFIG_FILE) \
 	  $(VERSION_FILE) \
 	  $(BUILD_PREFIX))
+
+meson:
+	$(MAKE) -f Makefile.meson
+
+meson_install:
+	$(MAKE) -f Makefile.meson install
+
+meson_docs:
+	$(MAKE) -f Makefile.meson docs
+
+PHONY += clean_meson
+clean_meson:
+	$(Q)$(MAKE) -f Makefile.meson $@
 
 .PHONY: clean
 
