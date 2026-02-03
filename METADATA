@@ -14,7 +14,7 @@ third_party {
   identifier {
     type: "Git"
     value: "https://git.kernel.org/pub/scm/libs/libtrace/libtracefs.git"
-    version: "0fb0e6a517e56cfc899e37d039f37b7ff0289423"
+    version: "417c2e3aa21af670cc5c13db633dd35292f2d0fa"
     closest_version: "libtracefs-1.8.1"
   }
 }
